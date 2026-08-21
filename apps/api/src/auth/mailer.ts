@@ -25,9 +25,16 @@ class ResendMailer implements Mailer {
       method: 'POST',
       headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ from: this.from, to, subject: SUBJECTS[kind], text: body(url, kind) }),
+      // Fastify's `requestTimeout` is disabled by default, so without this a
+      // hung Resend call would hang the sign-in request indefinitely.
+      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) {
-      // Deliberately does not include `to`: the address must not reach the logs.
+      // Drain the body so the underlying connection can be reused/closed
+      // cleanly. Deliberately does not include `to` or the response body in
+      // the thrown message: the recipient address (and anything Resend might
+      // echo back) must not reach the logs.
+      await res.text().catch(() => undefined)
       throw new Error(`Mail send failed with status ${res.status}`)
     }
   }
@@ -36,14 +43,17 @@ class ResendMailer implements Mailer {
 class ConsoleMailer implements Mailer {
   async sendSignInLink(_to: string, url: string, kind: 'invite' | 'signin'): Promise<void> {
     // Local development only. Prints the link so you can sign in without a mail provider.
+    // eslint-disable-next-line no-console -- intentional dev-only stdout sink, guarded by createMailer below
     console.log(`[mail:${kind}] ${url}`)
   }
 }
 
 export function createMailer(config: Config): Mailer {
   if (config.mail.apiKey) return new ResendMailer(config.mail.apiKey, config.mail.from)
-  if (config.nodeEnv === 'production') {
-    throw new Error('RESEND_API_KEY is required in production; sign-in would be impossible without it')
-  }
-  return new ConsoleMailer()
+  // Allowlist, not a denylist: an unset/unrecognised NODE_ENV (missing env
+  // var, a typo, "staging", "prod", "preview", ...) must fail loudly, not
+  // silently fall through to logging sign-in links — with a real token in
+  // that link — to stdout while every sign-in appears to succeed.
+  if (config.nodeEnv === 'development' || config.nodeEnv === 'test') return new ConsoleMailer()
+  throw new Error('RESEND_API_KEY is required outside development; sign-in would silently fail without it')
 }
