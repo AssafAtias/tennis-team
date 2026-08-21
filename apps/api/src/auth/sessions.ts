@@ -1,15 +1,6 @@
-import type { ColumnType, Kysely } from 'kysely'
+import type { Kysely } from 'kysely'
 import type { Database } from '../db/schema.js'
 import { hashToken, newToken } from './tokens.js'
-
-// Mirrors the un-exported `Ts` alias in db/schema.ts. `sessions.last_used_at`
-// is typed `Generated<Ts>` there; Kysely's `UpdateType<T>` helper only
-// unwraps one level of `ColumnType`, so nesting the `Ts` alias inside
-// `Generated<>` leaves the column's update type as the opaque `Ts` marker
-// object instead of `Date | string`. The cast below is compile-time only —
-// this type is structurally identical to that marker, so it satisfies the
-// checker without changing the plain `Date` value actually sent to postgres.
-type SchemaTs = ColumnType<Date, Date | string | undefined, Date | string>
 
 export const SESSION_COOKIE = 'tt_session'
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -33,12 +24,19 @@ export async function createSession(
   userAgent: string | undefined,
 ): Promise<string> {
   const { token, hash } = newToken()
+  const now = deps.now()
   await deps.db
     .insertInto('sessions')
     .values({
       member_id: memberId,
       token_hash: hash,
-      expires_at: new Date(deps.now().getTime() + SESSION_TTL_MS),
+      // Written explicitly from the injected clock rather than left to
+      // Postgres's `default now()`: a frozen test clock cannot control a DB
+      // default, and later cleanup-job tests need sessions created at exact,
+      // controlled times.
+      created_at: now,
+      last_used_at: now,
+      expires_at: new Date(now.getTime() + SESSION_TTL_MS),
       user_agent: userAgent?.slice(0, 255) ?? null,
     })
     .execute()
@@ -56,19 +54,22 @@ export async function resolveSession(deps: SessionDeps, token: string): Promise<
       'm.id as id',
       'm.email as email',
       'm.role as role',
-      'm.status as status',
       'p.member_id as profile_id',
     ])
     .where('s.token_hash', '=', hashToken(token))
     .where('s.expires_at', '>', now)
+    // Filtered in SQL, not just in JS below: a non-active member's row never
+    // leaves the database. Removing a member must end their access
+    // immediately, so this is the query that makes that true.
+    .where('m.status', '=', 'active')
     .executeTakeFirst()
 
-  if (!row || row.status !== 'active') return null
+  if (!row) return null
 
   // Sliding expiry: every use pushes the window out, capped at SESSION_TTL_MS.
   await deps.db
     .updateTable('sessions')
-    .set({ last_used_at: now as unknown as SchemaTs, expires_at: new Date(now.getTime() + SESSION_TTL_MS) })
+    .set({ last_used_at: now, expires_at: new Date(now.getTime() + SESSION_TTL_MS) })
     .where('id', '=', row.session_id)
     .execute()
   await deps.db.updateTable('members').set({ last_seen_at: now }).where('id', '=', row.id).execute()
@@ -82,4 +83,23 @@ export async function revokeSession(deps: SessionDeps, token: string): Promise<v
 
 export async function revokeAllForMember(deps: SessionDeps, memberId: number): Promise<void> {
   await deps.db.deleteFrom('sessions').where('member_id', '=', memberId).execute()
+}
+
+/**
+ * Redeems a login token atomically: one UPDATE, guarded by both
+ * `consumed_at is null` and `expires_at > now`, so two concurrent requests
+ * racing on the same emailed link can mint at most one session between them
+ * — the loser gets `null` back rather than a second valid session.
+ */
+export async function consumeLoginToken(deps: SessionDeps, token: string): Promise<number | null> {
+  const now = deps.now()
+  const row = await deps.db
+    .updateTable('login_tokens')
+    .set({ consumed_at: now })
+    .where('token_hash', '=', hashToken(token))
+    .where('consumed_at', 'is', null)
+    .where('expires_at', '>', now)
+    .returning(['member_id'])
+    .executeTakeFirst()
+  return row?.member_id ?? null
 }

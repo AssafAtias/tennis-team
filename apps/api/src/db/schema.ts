@@ -6,10 +6,16 @@ export interface MembersTable {
   id: Generated<number>
   email: string
   // `default 'player'` / `default 'invited'` in the DB — Generated so inserts
-  // may omit them (as some tests do), matching id/created_at below.
+  // may omit them (as some tests do), matching id below.
   role: Generated<'admin' | 'player'>
   status: Generated<'invited' | 'active' | 'removed'>
-  created_at: Generated<Ts>
+  // Not `Generated<Ts>`: `Ts` is itself a `ColumnType` alias, and Kysely's
+  // `SelectType`/`InsertType`/`UpdateType` helpers only unwrap one level of
+  // `ColumnType`. Wrapping it in `Generated<>` leaves selects/updates typed
+  // as the opaque `Ts` marker object instead of `Date`/`Date | string`. `Ts`
+  // already has `| undefined` in its insert position, so the column stays
+  // optional on insert without the `Generated<>` wrapper.
+  created_at: Ts
   last_seen_at: Ts | null
 }
 
@@ -27,7 +33,7 @@ export interface PlayerProfilesTable {
   rating_value: string | null
   racquet: string | null
   bio: string | null
-  updated_at: Generated<Ts>
+  updated_at: Ts // see the note on MembersTable.created_at above
 }
 
 export interface LoginTokensTable {
@@ -36,7 +42,7 @@ export interface LoginTokensTable {
   token_hash: Buffer
   expires_at: Ts
   consumed_at: Ts | null
-  created_at: Generated<Ts>
+  created_at: Ts // see the note on MembersTable.created_at above
 }
 
 export interface SessionsTable {
@@ -44,8 +50,8 @@ export interface SessionsTable {
   member_id: number
   token_hash: Buffer
   expires_at: Ts
-  created_at: Generated<Ts>
-  last_used_at: Generated<Ts>
+  created_at: Ts // see the note on MembersTable.created_at above
+  last_used_at: Ts // see the note on MembersTable.created_at above
   user_agent: string | null
 }
 
@@ -63,8 +69,8 @@ export interface MatchesTable {
   notes: string | null
   winner_side: 1 | 2
   recorded_by: number
-  created_at: Generated<Ts>
-  updated_at: Generated<Ts>
+  created_at: Ts // see the note on MembersTable.created_at above
+  updated_at: Ts // see the note on MembersTable.created_at above
 }
 
 export interface MatchPlayersTable {
