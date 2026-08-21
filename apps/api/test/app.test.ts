@@ -64,4 +64,28 @@ describe('app', () => {
       expect(res.statusCode).toBe(200)
     })
   })
+
+  it('allows a state-changing request with no Origin header (non-browser client)', async () => {
+    await buildTestApp(async (app) => {
+      app.post('/api/echo', () => ({ ok: true }))
+      const res = await app.inject({ method: 'POST', url: '/api/echo', payload: {} })
+      expect(res.statusCode).toBe(200)
+    })
+  })
+
+  it('still returns the error envelope when a route throws a non-object value', async () => {
+    // Fastify hands the error handler whatever was actually thrown. A bare
+    // string (or null, etc.) must not bypass the envelope: the `in` operator
+    // throws TypeError on a non-object right operand, so the handler has to
+    // guard for this rather than assume every thrown value is Error-like.
+    await buildTestApp(async (app) => {
+      app.get('/api/oops', () => {
+        // Deliberately throwing a non-Error value to exercise the guard.
+        throw 'a bare string, not an Error'
+      })
+      const res = await app.inject({ method: 'GET', url: '/api/oops' })
+      expect(res.statusCode).toBe(500)
+      expect(res.json()).toMatchObject({ error: { code: 'internal_error' } })
+    })
+  })
 })
