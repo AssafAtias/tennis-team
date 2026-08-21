@@ -10,6 +10,7 @@ import { registerOriginGuard } from './plugins/origin-guard.js'
 import { isAuthPreHandler } from './plugins/session.js'
 import { healthRoutes } from './routes/health.js'
 import { authRoutes } from './routes/auth.js'
+import { memberRoutes } from './routes/members.js'
 
 export interface Mailer {
   sendSignInLink(to: string, url: string, kind: 'invite' | 'signin'): Promise<void>
@@ -160,6 +161,19 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   })
 
   registerErrorHandler(app)
+
+  // Every `/api/` response carries per-caller data (roster, profile, session
+  // state) that a shared proxy cache or the browser's back/forward cache
+  // must never retain. Set once here, globally, rather than per route: Task
+  // 5 added this header by hand on `GET /api/auth/me` alone, and every route
+  // after it returns the same kind of personal data — relying on each future
+  // task to remember the header is exactly how one gets missed.
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (req.url.startsWith('/api/')) {
+      reply.header('cache-control', 'no-store')
+    }
+    return payload
+  })
   // contentSecurityPolicy: false only because there is no client bundle yet —
   // Task 19 replaces this with real directives once @fastify/static serves one.
   await app.register(helmet, { contentSecurityPolicy: false })
@@ -174,5 +188,6 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
 
   await app.register(healthRoutes, deps)
   await app.register(authRoutes, deps)
+  await app.register(memberRoutes, deps)
   return app
 }

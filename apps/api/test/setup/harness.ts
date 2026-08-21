@@ -6,6 +6,7 @@ import type { Database } from '../../src/db/schema.js'
 import { buildApp } from '../../src/app.js'
 import type { Config } from '../../src/config.js'
 import type { Mailer, ObjectStore } from '../../src/app.js'
+import { createSession, SESSION_COOKIE } from '../../src/auth/sessions.js'
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL
 if (!testDatabaseUrl) throw new Error('TEST_DATABASE_URL is required to run integration tests')
@@ -147,4 +148,40 @@ export async function buildTestApp(
       await app.close()
     }
   })
+}
+
+export interface SignedIn {
+  id: number
+  email: string
+  cookies: Record<string, string>
+}
+
+/**
+ * Seeds a member and returns cookies for an authenticated session, so route
+ * tests do not each re-run the magic-link dance.
+ */
+export async function signIn(
+  app: FastifyInstance,
+  ctx: TestCtx,
+  opts: {
+    email: string
+    role?: 'admin' | 'player'
+    status?: 'invited' | 'active' | 'removed'
+    profile?: boolean
+  },
+): Promise<SignedIn> {
+  const { email, role = 'player', status = 'active', profile = true } = opts
+  const m = await ctx.db
+    .insertInto('members')
+    .values({ email, role, status })
+    .returning('id')
+    .executeTakeFirstOrThrow()
+  if (profile) {
+    await ctx.db
+      .insertInto('player_profiles')
+      .values({ member_id: m.id, display_name: email.split('@')[0]! })
+      .execute()
+  }
+  const token = await createSession({ db: ctx.db, now: () => ctx.clock.now }, m.id, 'vitest')
+  return { id: m.id, email, cookies: { [SESSION_COOKIE]: token } }
 }

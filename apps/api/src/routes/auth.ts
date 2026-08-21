@@ -237,11 +237,11 @@ export async function authRoutes(app: FastifyInstance, deps: Deps): Promise<void
   app.get(
     '/api/auth/me',
     { preHandler: requireAuth, schema: { response: { 200: MeResponse } } },
-    async (req, reply) => {
-      // This response carries PII (email, role) tied to the caller's
-      // session; nothing downstream (a shared proxy cache, the browser's
-      // back/forward cache) should be allowed to retain a copy of it.
-      reply.header('cache-control', 'no-store')
+    async (req) => {
+      // `cache-control: no-store` is set globally for every /api/ response
+      // by an onSend hook in app.ts — see the comment there. This response
+      // carries PII (email, role) tied to the caller's session, which is
+      // exactly the kind of thing that hook exists to protect.
       return req.member
     },
   )
