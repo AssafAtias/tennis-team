@@ -20,7 +20,10 @@ describe('app', () => {
 
   it('hides internal detail behind a request id on an unexpected error', async () => {
     await buildTestApp(async (app) => {
-      app.get('/api/boom', () => {
+      // `public: true`: this route exercises the error envelope, not auth —
+      // Task 4's default-deny `onRoute` hook otherwise refuses to register
+      // any `/api/` route with no auth `preHandler`.
+      app.get('/api/boom', { config: { public: true } }, () => {
         throw new Error('secret internal detail')
       })
       const res = await app.inject({ method: 'GET', url: '/api/boom' })
@@ -33,7 +36,9 @@ describe('app', () => {
 
   it('rejects a state-changing request with a foreign Origin', async () => {
     await buildTestApp(async (app) => {
-      app.post('/api/echo', () => ({ ok: true }))
+      // `public: true`: this route exercises the origin guard, not auth —
+      // see the note on `/api/boom` above.
+      app.post('/api/echo', { config: { public: true } }, () => ({ ok: true }))
       const res = await app.inject({
         method: 'POST',
         url: '/api/echo',
@@ -47,7 +52,9 @@ describe('app', () => {
 
   it('allows a state-changing request from the app origin', async () => {
     await buildTestApp(async (app) => {
-      app.post('/api/echo', () => ({ ok: true }))
+      // `public: true`: this route exercises the origin guard, not auth —
+      // see the note on `/api/boom` above.
+      app.post('/api/echo', { config: { public: true } }, () => ({ ok: true }))
       const res = await app.inject({
         method: 'POST',
         url: '/api/echo',
@@ -67,7 +74,9 @@ describe('app', () => {
 
   it('allows a state-changing request with no Origin header (non-browser client)', async () => {
     await buildTestApp(async (app) => {
-      app.post('/api/echo', () => ({ ok: true }))
+      // `public: true`: this route exercises the origin guard, not auth —
+      // see the note on `/api/boom` above.
+      app.post('/api/echo', { config: { public: true } }, () => ({ ok: true }))
       const res = await app.inject({ method: 'POST', url: '/api/echo', payload: {} })
       expect(res.statusCode).toBe(200)
     })
@@ -79,13 +88,29 @@ describe('app', () => {
     // throws TypeError on a non-object right operand, so the handler has to
     // guard for this rather than assume every thrown value is Error-like.
     await buildTestApp(async (app) => {
-      app.get('/api/oops', () => {
+      // `public: true`: see the note on `/api/boom` above.
+      app.get('/api/oops', { config: { public: true } }, () => {
         // Deliberately throwing a non-Error value to exercise the guard.
         throw 'a bare string, not an Error'
       })
       const res = await app.inject({ method: 'GET', url: '/api/oops' })
       expect(res.statusCode).toBe(500)
       expect(res.json()).toMatchObject({ error: { code: 'internal_error' } })
+    })
+  })
+
+  it('refuses to register an /api/ route with no auth preHandler and no public flag', async () => {
+    await buildTestApp(async (app) => {
+      expect(() => app.get('/api/unguarded', () => ({ ok: true }))).toThrow(
+        /declares no auth preHandler and is not marked public/,
+      )
+    })
+  })
+
+  it('allows an /api/ route explicitly marked public, and one with an auth preHandler', async () => {
+    await buildTestApp(async (app) => {
+      expect(() => app.get('/api/public-thing', { config: { public: true } }, () => ({ ok: true }))).not.toThrow()
+      expect(() => app.get('/api/guarded', { preHandler: async () => {} }, () => ({ ok: true }))).not.toThrow()
     })
   })
 })
