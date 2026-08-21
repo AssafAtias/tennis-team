@@ -1,8 +1,21 @@
+import { Writable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { buildTestApp } from './setup/harness.js'
+import { MeResponse } from '@tennis/contracts'
+import { buildTestApp, FakeMailer, FakeStore, testConfig, withTx } from './setup/harness.js'
+import { buildApp } from '../src/app.js'
 import { SESSION_COOKIE } from '../src/auth/sessions.js'
+import { requireAuth } from '../src/plugins/session.js'
 
 const ORIGIN = { origin: 'http://localhost:3000' }
+
+/** Captures every chunk written to it, for asserting on what a test app actually logged. */
+class CapturingStream extends Writable {
+  readonly lines: string[] = []
+  override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.lines.push(chunk.toString())
+    callback()
+  }
+}
 
 describe('auth routes', () => {
   it('emails a link to a known member', async () => {
@@ -244,6 +257,238 @@ describe('auth routes', () => {
       expect(sixth.json()).toMatchObject({ error: { code: 'rate_limited' } })
       // The limiter engaged instead of failing open: still only 5 mails sent.
       expect(ctx.mailer.sent).toHaveLength(5)
+    })
+  })
+
+  // --- Fix round 1 coverage -------------------------------------------------
+
+  it('never logs the raw callback token, even with request logging turned on', async () => {
+    await withTx(async (db) => {
+      const stream = new CapturingStream()
+      const mailer = new FakeMailer()
+      const app = await buildApp({
+        db,
+        // nodeEnv !== 'test' is deliberate: that's what turns request
+        // logging on in the first place (see app.ts) — the point of this
+        // test is that the token still doesn't show up once logging is on.
+        config: { ...testConfig, nodeEnv: 'development' },
+        mailer,
+        storage: new FakeStore(),
+        now: () => new Date('2026-08-21T10:00:00Z'),
+        logDestination: stream,
+      })
+      try {
+        await db.insertInto('members').values({ email: 'logged@example.com', status: 'active' }).execute()
+        await app.inject({
+          method: 'POST',
+          url: '/api/auth/request-link',
+          headers: ORIGIN,
+          payload: { email: 'logged@example.com' },
+        })
+        const token = new URL(mailer.last!.url).searchParams.get('token')!
+        await app.inject({ method: 'GET', url: `/api/auth/callback?token=${token}` })
+
+        const logged = stream.lines.join('')
+        // Logging is genuinely on (otherwise this assertion would pass for
+        // the wrong reason): the path is there...
+        expect(logged).toContain('/api/auth/callback')
+        // ...but the token that made this a bearer credential is not.
+        expect(logged).not.toContain(token)
+      } finally {
+        await app.close()
+      }
+    })
+  })
+
+  it('a mail-provider failure still returns 202 immediately, not a 500 that would out a known address', async () => {
+    await withTx(async (db) => {
+      class FailingMailer {
+        calls = 0
+        async sendSignInLink(): Promise<void> {
+          this.calls += 1
+          throw new Error('mail provider down')
+        }
+      }
+      const mailer = new FailingMailer()
+      const app = await buildApp({
+        db,
+        config: testConfig,
+        mailer,
+        storage: new FakeStore(),
+        now: () => new Date('2026-08-21T10:00:00Z'),
+      })
+      try {
+        await db.insertInto('members').values({ email: 'flaky@example.com', status: 'active' }).execute()
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/auth/request-link',
+          headers: ORIGIN,
+          payload: { email: 'flaky@example.com' },
+        })
+        expect(res.statusCode).toBe(202)
+        expect(res.json()).toEqual({ status: 'sent' })
+        // Give the fire-and-forget send a tick to actually run (and fail),
+        // proving the 202 above did not come from the send having already
+        // quietly succeeded before this assertion.
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(mailer.calls).toBe(1)
+      } finally {
+        await app.close()
+      }
+    })
+  })
+
+  it('rate-limits request-link per IP once 20 distinct addresses have been probed', async () => {
+    await buildTestApp(async (app) => {
+      let last
+      for (let i = 0; i < 20; i++) {
+        last = await app.inject({
+          method: 'POST',
+          url: '/api/auth/request-link',
+          headers: ORIGIN,
+          payload: { email: `enum-probe-${i}@example.com` },
+        })
+      }
+      expect(last!.statusCode).toBe(202)
+
+      const res21 = await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'enum-probe-20@example.com' },
+      })
+      expect(res21.statusCode).toBe(429)
+      expect(res21.json()).toMatchObject({ error: { code: 'rate_limited' } })
+    })
+  })
+
+  it('a token redeemed after its member was removed lands on the invalid destination and mints no session', async () => {
+    await buildTestApp(async (app, ctx) => {
+      await ctx.db.insertInto('members').values({ email: 'goneafter@example.com', status: 'active' }).execute()
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'goneafter@example.com' },
+      })
+      const token = new URL(ctx.mailer.last!.url).searchParams.get('token')!
+
+      // Removed after the link was sent, before it was redeemed.
+      await ctx.db
+        .updateTable('members')
+        .set({ status: 'removed' })
+        .where('email', '=', 'goneafter@example.com')
+        .execute()
+
+      const res = await app.inject({ method: 'GET', url: `/api/auth/callback?token=${token}` })
+      expect(res.statusCode).toBe(302)
+      expect(res.headers.location).toBe('/login?error=link_invalid')
+      expect(res.cookies.find((c) => c.name === SESSION_COOKIE)).toBeUndefined()
+
+      const sessionCount = await ctx.db
+        .selectFrom('sessions')
+        .select((eb) => eb.fn.countAll<number>().as('n'))
+        .executeTakeFirstOrThrow()
+      expect(Number(sessionCount.n)).toBe(0)
+    })
+  })
+
+  it('a stale session cookie is cleared by requireAuth, not just rejected', async () => {
+    await buildTestApp(async (app, ctx) => {
+      await ctx.db.insertInto('members').values({ email: 'wentaway@example.com', status: 'active' }).execute()
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'wentaway@example.com' },
+      })
+      const token = new URL(ctx.mailer.last!.url).searchParams.get('token')!
+      const cb = await app.inject({ method: 'GET', url: `/api/auth/callback?token=${token}` })
+      const session = cb.cookies.find((c) => c.name === SESSION_COOKIE)!.value
+
+      // The member is removed after the session was minted: `resolveSession`
+      // filters on `status = 'active'`, so this cookie can no longer resolve
+      // — but without the fix, it would also never be cleared, since
+      // `requireAuth` used to 401 without touching the cookie.
+      await ctx.db.updateTable('members').set({ status: 'removed' }).where('email', '=', 'wentaway@example.com').execute()
+
+      const res = await app.inject({ method: 'GET', url: '/api/auth/me', cookies: { [SESSION_COOKIE]: session } })
+      expect(res.statusCode).toBe(401)
+      const cleared = res.cookies.find((c) => c.name === SESSION_COOKIE)
+      expect(cleared?.value).toBe('')
+    })
+  })
+
+  it('me responses are marked no-store', async () => {
+    await buildTestApp(async (app, ctx) => {
+      await ctx.db.insertInto('members').values({ email: 'nostore@example.com', status: 'active' }).execute()
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'nostore@example.com' },
+      })
+      const token = new URL(ctx.mailer.last!.url).searchParams.get('token')!
+      const cb = await app.inject({ method: 'GET', url: `/api/auth/callback?token=${token}` })
+      const session = cb.cookies.find((c) => c.name === SESSION_COOKIE)!.value
+
+      const res = await app.inject({ method: 'GET', url: '/api/auth/me', cookies: { [SESSION_COOKIE]: session } })
+      expect(res.headers['cache-control']).toBe('no-store')
+    })
+  })
+
+  it('the response schema strips fields outside MeResponse, even if request.member somehow carried one', async () => {
+    await buildTestApp(async (app, ctx) => {
+      // Registered before any inject() on this app — Fastify refuses new
+      // routes once an instance has started, which any earlier inject()
+      // would trigger.
+      app.get(
+        '/api/test-me-leak',
+        { preHandler: requireAuth, schema: { response: { 200: MeResponse } } },
+        (req) => ({ ...req.member, secretInternalField: 'should-not-appear' }),
+      )
+
+      await ctx.db.insertInto('members').values({ email: 'leak@example.com', status: 'active' }).execute()
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'leak@example.com' },
+      })
+      const token = new URL(ctx.mailer.last!.url).searchParams.get('token')!
+      const cb = await app.inject({ method: 'GET', url: `/api/auth/callback?token=${token}` })
+      const session = cb.cookies.find((c) => c.name === SESSION_COOKIE)!.value
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/test-me-leak',
+        cookies: { [SESSION_COOKIE]: session },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).not.toHaveProperty('secretInternalField')
+    })
+  })
+
+  it('enumeration: a known and an unknown address get statuswise, bytewise, and header-wise identical responses', async () => {
+    await buildTestApp(async (app, ctx) => {
+      await ctx.db.insertInto('members').values({ email: 'sym-known@example.com', status: 'active' }).execute()
+
+      const known = await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'sym-known@example.com' },
+      })
+      const unknown = await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'sym-unknown@example.com' },
+      })
+
+      expect(known.statusCode).toBe(unknown.statusCode)
+      expect(known.json()).toEqual(unknown.json())
+      expect(Object.keys(known.headers).sort()).toEqual(Object.keys(unknown.headers).sort())
     })
   })
 })

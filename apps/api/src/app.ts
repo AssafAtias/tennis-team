@@ -29,6 +29,12 @@ export interface Deps {
   mailer: Mailer
   storage: ObjectStore
   now: () => Date
+  // Test-only hook: an alternate pino destination so a test can capture what
+  // the app actually logs (e.g. to prove a token never appears in a log
+  // line) without touching process.stdout globally. Left undefined in every
+  // real caller, in which case pino falls back to its normal stdout
+  // destination exactly as before this field existed.
+  logDestination?: NodeJS.WritableStream
 }
 
 // Lets a later preHandler/hook reach `req.server.deps` (e.g. the Task 4
@@ -36,6 +42,16 @@ export interface Deps {
 declare module 'fastify' {
   interface FastifyInstance {
     deps: Deps
+  }
+  // Backs the `config: { public: true }` opt-out the `onRoute` guard below
+  // checks for. Declared here (rather than left as the ad-hoc cast the
+  // guard used to read it with) because a route whose `config` also carries
+  // a `rateLimit`-plugin-typed `preHandler` pins TypeScript's inference of
+  // the route's ContextConfig type parameter to `FastifyContextConfig` —
+  // once that happens, an un-declared `public` key on the literal is an
+  // excess-property error, not a loose extra field.
+  interface FastifyContextConfig {
+    public?: boolean
   }
 }
 
@@ -56,6 +72,28 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
       // in error-handler.ts instead, since key-path redaction can't reach
       // inside a string value.
       redact: ['req.headers.cookie', 'req.headers.authorization', '*.email', '*.token'],
+      // The default `req` serializer includes the full `url`, and this
+      // app's sign-in callback carries a single-use token in its query
+      // string (`/api/auth/callback?token=...`) — a URL here can be a
+      // credential. `redact` above can't help: it strips values sitting
+      // at a key literally named e.g. `token`, not a token embedded inside
+      // a URL string. So every logged URL is truncated to its path,
+      // dropping the query entirely, for every route, not just this one —
+      // a per-route exception would be one omission away from leaking the
+      // next token.
+      serializers: {
+        req: (req) => ({
+          method: req.method,
+          url: req.url.includes('?') ? req.url.slice(0, req.url.indexOf('?')) : req.url,
+          host: req.host,
+          remoteAddress: req.ip,
+        }),
+      },
+      // Test-only: lets a test capture what actually gets logged (see
+      // `Deps.logDestination`) instead of writing to the real stdout.
+      // Absent in every real caller, so pino falls back to its normal
+      // destination exactly as before.
+      ...(deps.logDestination ? { stream: deps.logDestination } : {}),
     },
     disableRequestLogging: deps.config.nodeEnv === 'test',
     // Trust exactly one hop in front of the app, not the whole chain. `true`
@@ -111,7 +149,7 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   // not to do.
   app.addHook('onRoute', (route) => {
     if (!route.url.startsWith('/api/')) return
-    if ((route.config as { public?: boolean } | undefined)?.public) return
+    if (route.config?.public) return
     const handlers = [route.preHandler].flat().filter(Boolean)
     if (!handlers.some(isAuthPreHandler)) {
       throw new Error(

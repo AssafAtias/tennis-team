@@ -25,11 +25,21 @@ const AUTH_PREHANDLER = Symbol.for('tennis.authPreHandler')
 type Branded = { [AUTH_PREHANDLER]?: true }
 
 export const requireAuth = Object.assign(
-  async function requireAuth(req: FastifyRequest): Promise<void> {
+  async function requireAuth(req: FastifyRequest, reply: FastifyReply): Promise<void> {
     const token = req.cookies[SESSION_COOKIE]
     if (!token) throw unauthorized()
     const member = await resolveSession(req.server.deps, token)
-    if (!member) throw unauthorized()
+    if (!member) {
+      // A cookie was presented but didn't resolve to anything — expired,
+      // revoked, or (the case this exists for) belonging to a member whose
+      // status is no longer 'active'. Without this, that cookie is
+      // undeletable: `resolveSession` filters on `m.status = 'active'`, so
+      // a removed member can never again pass a check that would let them
+      // reach `POST /api/auth/logout` to clear it themselves, and they'd
+      // carry an unusable 30-day cookie until it expires on its own.
+      clearSessionCookie(reply)
+      throw unauthorized()
+    }
     req.member = member
   },
   { [AUTH_PREHANDLER]: true as const },
@@ -37,8 +47,8 @@ export const requireAuth = Object.assign(
 
 export function requireRole(role: 'admin') {
   return Object.assign(
-    async function requireRoleHandler(req: FastifyRequest): Promise<void> {
-      await requireAuth(req)
+    async function requireRoleHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+      await requireAuth(req, reply)
       if (req.member.role !== role) throw forbidden()
     },
     { [AUTH_PREHANDLER]: true as const },
