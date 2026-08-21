@@ -5,8 +5,10 @@ type Ts = ColumnType<Date, Date | string | undefined, Date | string>
 export interface MembersTable {
   id: Generated<number>
   email: string
-  role: 'admin' | 'player'
-  status: 'invited' | 'active' | 'removed'
+  // `default 'player'` / `default 'invited'` in the DB — Generated so inserts
+  // may omit them (as some tests do), matching id/created_at below.
+  role: Generated<'admin' | 'player'>
+  status: Generated<'invited' | 'active' | 'removed'>
   created_at: Generated<Ts>
   last_seen_at: Ts | null
 }
@@ -20,7 +22,8 @@ export interface PlayerProfilesTable {
   dominant_hand: 'left' | 'right' | null
   backhand: 'one' | 'two' | null
   preferred_format: 'singles' | 'doubles' | 'both' | null
-  rating_system: 'utr' | 'ntrp' | 'club' | 'none'
+  // `default 'none'` in the DB — Generated so inserts may omit it.
+  rating_system: Generated<'utr' | 'ntrp' | 'club' | 'none'>
   rating_value: string | null
   racquet: string | null
   bio: string | null

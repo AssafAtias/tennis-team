@@ -1,1 +1,10 @@
-{ "files": [], "references": [{ "path": "packages/contracts" }, { "path": "apps/api" }] }
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/contracts/tsconfig.test.json" },
+    { "path": "apps/api" },
+    { "path": "apps/api/tsconfig.test.json" }
+  ]
+}
+
