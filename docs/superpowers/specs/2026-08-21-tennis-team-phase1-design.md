@@ -90,7 +90,8 @@ Technology:
 - API: Node 22, Fastify, TypeBox validation, Pino logging
 - Data access: the Kysely typed SQL query builder over `node-postgres`; no ORM
 - Migrations: numbered, forward-only `.sql` files applied by an explicit release command
-- Client: React 19, Vite, TypeScript, React Router, TanStack Query, React Hook Form + Zod
+- Client: React 19, Vite, TypeScript, React Router, TanStack Query, React Hook Form with
+  the TypeBox resolver
 - Styling: Tailwind CSS with hand-built `Card`, `Button`, `Field`, `Avatar`, `Grid`
 - Email: the Resend transactional provider, for invitation and sign-in links
 - Storage: S3-compatible object storage (Cloudflare R2 or AWS S3) for profile photos
@@ -368,8 +369,9 @@ will realistically be edited while standing on a court.
 
 TanStack Query owns all server state; there is no separate client state store, and the
 current session is exposed as a query against `GET /api/auth/me`. Forms use React Hook
-Form with Zod schemas derived from the shared contracts, so client and server reject the
-same input for the same reason.
+Form validating against the very same TypeBox schemas the API validates against, via
+`@hookform/resolvers/typebox`, so client and server reject the same input for the same
+reason with no second schema language to keep in step.
 
 Visual direction is chosen deliberately rather than defaulted, and is settled during
 implementation of the first UI task using the frontend design skill. The constraint
