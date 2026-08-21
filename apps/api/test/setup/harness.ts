@@ -1,7 +1,11 @@
 import { afterAll } from 'vitest'
 import { sql, type Kysely } from 'kysely'
+import type { FastifyInstance } from 'fastify'
 import { createDb, createPool } from '../../src/db/client.js'
 import type { Database } from '../../src/db/schema.js'
+import { buildApp } from '../../src/app.js'
+import type { Config } from '../../src/config.js'
+import type { Mailer, ObjectStore } from '../../src/app.js'
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL
 if (!testDatabaseUrl) throw new Error('TEST_DATABASE_URL is required to run integration tests')
@@ -57,4 +61,90 @@ export async function expectViolation(
   await sql`rollback to savepoint expect_violation`.execute(tx)
   if (err === undefined) throw new Error(`expected a violation matching ${match}`)
   if (!match.test(String(err))) throw err
+}
+
+// `testDatabaseUrl` above is already checked non-undefined at module load, so
+// reuse it here instead of re-asserting `process.env.TEST_DATABASE_URL!`.
+export const testConfig: Config = {
+  nodeEnv: 'test',
+  port: 0,
+  databaseUrl: testDatabaseUrl,
+  sessionSecret: 'test-secret-value-that-is-long-enough-ok',
+  appOrigin: 'http://localhost:3000',
+  bootstrapAdminEmail: undefined,
+  mail: { apiKey: undefined, from: 'Tennis Team <noreply@localhost>' },
+  storage: { endpoint: undefined, bucket: undefined, accessKeyId: undefined, secretAccessKey: undefined },
+}
+
+export interface SentMail {
+  to: string
+  url: string
+  kind: 'invite' | 'signin'
+}
+
+export class FakeMailer implements Mailer {
+  readonly sent: SentMail[] = []
+  async sendSignInLink(to: string, url: string, kind: 'invite' | 'signin'): Promise<void> {
+    this.sent.push({ to, url, kind })
+  }
+  get last(): SentMail | undefined {
+    return this.sent.at(-1)
+  }
+}
+
+export class FakeStore implements ObjectStore {
+  readonly objects = new Map<string, { body: Buffer; contentType: string }>()
+  async presignPut(key: string): Promise<string> {
+    return `https://fake-storage.local/${key}?signed=1`
+  }
+  async get(key: string): Promise<Buffer> {
+    const o = this.objects.get(key)
+    if (!o) throw new Error(`no such object: ${key}`)
+    return o.body
+  }
+  async put(key: string, body: Buffer, contentType: string): Promise<void> {
+    this.objects.set(key, { body, contentType })
+  }
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key)
+  }
+  publicUrl(key: string): string {
+    return `https://fake-storage.local/${key}`
+  }
+}
+
+export interface TestCtx {
+  db: Kysely<Database>
+  mailer: FakeMailer
+  storage: FakeStore
+  clock: { now: Date }
+}
+
+/**
+ * Builds an app bound to a rolled-back transaction, with fake mailer and storage.
+ * The clock is mutable so tests can advance time to expire tokens and sessions.
+ */
+export async function buildTestApp(
+  fn: (app: FastifyInstance, ctx: TestCtx) => Promise<void>,
+): Promise<void> {
+  await withTx(async (db) => {
+    const ctx: TestCtx = {
+      db,
+      mailer: new FakeMailer(),
+      storage: new FakeStore(),
+      clock: { now: new Date('2026-08-21T10:00:00Z') },
+    }
+    const app = await buildApp({
+      db,
+      config: testConfig,
+      mailer: ctx.mailer,
+      storage: ctx.storage,
+      now: () => ctx.clock.now,
+    })
+    try {
+      await fn(app, ctx)
+    } finally {
+      await app.close()
+    }
+  })
 }
