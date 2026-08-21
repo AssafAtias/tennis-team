@@ -1,7 +1,8 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sql, type Kysely } from 'kysely'
+import { createDb, createPool } from './client.js'
 import type { Database } from './schema.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -31,4 +32,18 @@ export async function runMigrations(db: Kysely<Database>): Promise<string[]> {
     ran.push(name)
   }
   return ran
+}
+
+// CLI entry point: `node dist/db/migrate.js` (wired up as the `migrate` script
+// in package.json). Without this guard the script only imported the module and
+// exited 0 without applying anything — a silent no-op that reads as success.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const url = process.env.DATABASE_URL
+  if (!url) throw new Error('DATABASE_URL is required to run migrations')
+  const db = createDb(createPool(url))
+  try {
+    console.log((await runMigrations(db)).join('\n') || 'no pending migrations')
+  } finally {
+    await db.destroy()
+  }
 }
