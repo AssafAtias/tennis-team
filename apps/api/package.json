@@ -1,0 +1,18 @@
+{
+  "name": "@tennis/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "node --watch --experimental-strip-types src/index.ts",
+    "test": "vitest run",
+    "migrate": "node dist/db/migrate.js"
+  },
+  "dependencies": {
+    "@tennis/contracts": "*",
+    "kysely": "^0.27.5",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": { "@types/pg": "^8.11.10" }
+}
