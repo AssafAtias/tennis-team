@@ -42,6 +42,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (!url) throw new Error('DATABASE_URL is required to run migrations')
   const db = createDb(createPool(url))
   try {
+    // eslint-disable-next-line no-console -- CLI entry point's own stdout output, not a request-serving code path
     console.log((await runMigrations(db)).join('\n') || 'no pending migrations')
   } finally {
     await db.destroy()

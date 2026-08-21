@@ -12,11 +12,17 @@ describe('tokens', () => {
     expect(seen.size).toBe(500)
   })
 
-  it('hashes deterministically to 32 bytes and does not embed the token', () => {
+  it('hashes deterministically to 32 bytes, stably across calls', () => {
     const { token, hash } = newToken()
     expect(hash).toEqual(hashToken(token))
     expect(hash).toHaveLength(32)
-    expect(hash.toString('utf8')).not.toContain(token)
+    expect(hashToken(token)).toEqual(hashToken(token))
+  })
+
+  it('produces a different hash for tokens that differ by a single character', () => {
+    const { token, hash } = newToken()
+    const flipped = (token[0] === 'a' ? 'b' : 'a') + token.slice(1)
+    expect(hashToken(flipped)).not.toEqual(hash)
   })
 
   it('expires tokens after fifteen minutes', () => {
