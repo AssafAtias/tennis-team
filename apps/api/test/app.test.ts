@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildTestApp } from './setup/harness.js'
+import { requireAuth } from '../src/plugins/session.js'
 
 describe('app', () => {
   it('reports healthy when the database answers', async () => {
@@ -99,18 +100,30 @@ describe('app', () => {
     })
   })
 
-  it('refuses to register an /api/ route with no auth preHandler and no public flag', async () => {
+  it('refuses to register an /api/ route with no preHandler at all and no public flag', async () => {
     await buildTestApp(async (app) => {
       expect(() => app.get('/api/unguarded', () => ({ ok: true }))).toThrow(
-        /declares no auth preHandler and is not marked public/,
+        /has no authenticating preHandler and is not marked public/,
       )
     })
   })
 
-  it('allows an /api/ route explicitly marked public, and one with an auth preHandler', async () => {
+  it('refuses to register an /api/ route whose preHandler is not a branded auth handler', async () => {
+    // This is the case the brand check exists for: a preHandler IS present
+    // (unlike the case above), but it's an unrelated no-op — a stand-in for
+    // a rate limiter, a logger, or a typo — and must not satisfy the guard
+    // just by being present.
+    await buildTestApp(async (app) => {
+      expect(() => app.get('/api/looks-guarded', { preHandler: async () => {} }, () => ({ ok: true }))).toThrow(
+        /has no authenticating preHandler and is not marked public/,
+      )
+    })
+  })
+
+  it('allows an /api/ route explicitly marked public, and one guarded by requireAuth', async () => {
     await buildTestApp(async (app) => {
       expect(() => app.get('/api/public-thing', { config: { public: true } }, () => ({ ok: true }))).not.toThrow()
-      expect(() => app.get('/api/guarded', { preHandler: async () => {} }, () => ({ ok: true }))).not.toThrow()
+      expect(() => app.get('/api/guarded', { preHandler: requireAuth }, () => ({ ok: true }))).not.toThrow()
     })
   })
 })
