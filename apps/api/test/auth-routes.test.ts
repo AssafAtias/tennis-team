@@ -5,6 +5,7 @@ import { buildTestApp, FakeMailer, FakeStore, testConfig, withTx } from './setup
 import { buildApp } from '../src/app.js'
 import { SESSION_COOKIE } from '../src/auth/sessions.js'
 import { requireAuth } from '../src/plugins/session.js'
+import { ipBudgetKey } from '../src/routes/auth.js'
 
 const ORIGIN = { origin: 'http://localhost:3000' }
 
@@ -490,5 +491,58 @@ describe('auth routes', () => {
       expect(known.json()).toEqual(unknown.json())
       expect(Object.keys(known.headers).sort()).toEqual(Object.keys(unknown.headers).sort())
     })
+  })
+
+  it('rate-limits request-link per /64 even when each request comes from a different address in that /64', async () => {
+    await buildTestApp(async (app) => {
+      // All addresses below live in the same 2001:db8:f00d::/64 — an ISP
+      // handing a customer that whole /64 could pick any of them per
+      // request. If the budget were keyed on the raw address (pre-fix),
+      // none of these would ever collide and all 21 would return 202.
+      let last
+      for (let i = 0; i < 20; i++) {
+        last = await app.inject({
+          method: 'POST',
+          url: '/api/auth/request-link',
+          headers: ORIGIN,
+          payload: { email: `same-64-${i}@example.com` },
+          remoteAddress: `2001:db8:f00d::${(i + 1).toString(16)}`,
+        })
+      }
+      expect(last!.statusCode).toBe(202)
+
+      const res21 = await app.inject({
+        method: 'POST',
+        url: '/api/auth/request-link',
+        headers: ORIGIN,
+        payload: { email: 'same-64-20@example.com' },
+        remoteAddress: '2001:db8:f00d::ffff',
+      })
+      expect(res21.statusCode).toBe(429)
+      expect(res21.json()).toMatchObject({ error: { code: 'rate_limited' } })
+    })
+  })
+})
+
+describe('ipBudgetKey', () => {
+  it('collapses two different addresses in the same /64 to the same key', () => {
+    expect(ipBudgetKey('2001:db8::1')).toBe(ipBudgetKey('2001:db8::dead:beef'))
+  })
+
+  it('gives addresses in different /64s different keys', () => {
+    expect(ipBudgetKey('2001:db8::1')).not.toBe(ipBudgetKey('2001:db8:1::1'))
+  })
+
+  it('parses :: and a ::-prefixed loopback without throwing', () => {
+    expect(() => ipBudgetKey('::')).not.toThrow()
+    expect(() => ipBudgetKey('::1')).not.toThrow()
+  })
+
+  it('passes an IPv4 address through unchanged', () => {
+    expect(ipBudgetKey('203.0.113.5')).toBe('203.0.113.5')
+  })
+
+  it('does not break on an address carrying a zone index', () => {
+    expect(() => ipBudgetKey('fe80::1%eth0')).not.toThrow()
   })
 })

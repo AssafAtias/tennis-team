@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import rateLimit from '@fastify/rate-limit'
 import type { Kysely } from 'kysely'
 import { CallbackQuery, MeResponse, RequestLinkBody } from '@tennis/contracts'
 import type { Deps } from '../app.js'
@@ -8,6 +9,33 @@ import { consumeLoginToken, createSession, revokeSession, SESSION_COOKIE } from 
 import { clearSessionCookie, requireAuth, setSessionCookie } from '../plugins/session.js'
 
 const INVALID = '/login?error=link_invalid'
+
+/**
+ * Collapses an IPv6 address to its /64 before it's used as a rate-limit
+ * key; IPv4 addresses pass through unchanged. Residential and mobile ISPs
+ * routinely delegate an entire /64 (often more) to one customer, so keying
+ * on the full address would let that customer mint a fresh source address
+ * every 20 probes and walk the membership list at full speed anyway —
+ * exactly the thing `requestLinkIpBudget` below exists to stop.
+ *
+ * `@fastify/rate-limit` already does this collapsing internally, but only
+ * for its own DEFAULT keyGenerator (see `defaultKeyGenerator` in its
+ * source) — `requestLinkIpBudget` needs a custom one, to key on IP alone
+ * rather than the plugin's default of IP+nothing, so it has to redo the
+ * collapsing itself or not get it at all.
+ *
+ * Delegates to the plugin's own exported `normalizeIP` rather than
+ * hand-rolling IPv6 parsing: it's already implemented (via the `ip-address`
+ * package's real CIDR math, not a regex/split job) and already exercised by
+ * the plugin's own test suite. Verified directly against the cases that
+ * matter: `2001:db8::1` and `2001:db8::dead:beef` (same /64) both collapse
+ * to `2001:db8::`; `2001:db8:1::1` (a different /64) collapses to
+ * `2001:db8:1::`; `::1`, `::`, and a zone-index address (`fe80::1%eth0`)
+ * all parse without throwing; a plain IPv4 address passes through as-is.
+ */
+export function ipBudgetKey(ip: string): string {
+  return rateLimit.normalizeIP(ip)
+}
 
 /**
  * Activates an invited member and mints their session as one unit: if
@@ -68,7 +96,7 @@ export async function authRoutes(app: FastifyInstance, deps: Deps): Promise<void
   const requestLinkIpBudget = app.createRateLimit({
     max: 20,
     timeWindow: '15 minutes',
-    keyGenerator: (req) => req.ip,
+    keyGenerator: (req) => ipBudgetKey(req.ip),
   })
 
   app.post(
