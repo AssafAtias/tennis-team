@@ -9,6 +9,7 @@ import { registerErrorHandler } from './plugins/error-handler.js'
 import { registerOriginGuard } from './plugins/origin-guard.js'
 import { isAuthPreHandler } from './plugins/session.js'
 import { healthRoutes } from './routes/health.js'
+import { authRoutes } from './routes/auth.js'
 
 export interface Mailer {
   sendSignInLink(to: string, url: string, kind: 'invite' | 'signin'): Promise<void>
@@ -73,6 +74,20 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
     // trusts only the immediate peer's X-Forwarded-For entry (the one
     // real proxy), which is the actual single-hop-topology equivalent.
     trustProxy: (_address, hop) => hop === 0,
+    // No `ajv: { plugins: [...] }` here: `@fastify/ajv-compiler@4` (bundled
+    // by fastify@5.12.1) already calls `require('ajv-formats')(this.ajv)`
+    // itself by default (see its `lib/validator-compiler.js`) unless the
+    // caller supplies a plugin literally named `formatsPlugin`. TypeBox's
+    // `format: 'email'` (used by the auth contracts) is therefore already
+    // enforced with no extra wiring — confirmed by a request with a
+    // malformed address getting a 400 in auth-routes.test.ts. Wiring our own
+    // `ajv-formats` on top would be redundant, and would additionally hit a
+    // TypeScript-only conflict: this repo's root `eslint` pins `ajv@6` at
+    // the shared top-level `node_modules/ajv` slot, so npm can't hoist one
+    // shared `ajv@8` for the packages that need it, and a manually-imported
+    // `ajv-formats` ends up with its own physical `ajv@8` copy that
+    // TypeScript treats as a different (incompatible) type from the one
+    // `@fastify/ajv-compiler` uses internally.
   })
 
   // app.decorate('deps', deps) lets later preHandlers (e.g. the Task 4 session
@@ -120,5 +135,6 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   await app.register(rateLimit, { global: false })
 
   await app.register(healthRoutes, deps)
+  await app.register(authRoutes, deps)
   return app
 }
