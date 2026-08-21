@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withTx } from './setup/harness.js'
+import { expectViolation, withTx } from './setup/harness.js'
 
 describe('schema', () => {
   it('stores a member and cascades the profile on delete', async () => {
@@ -17,6 +17,14 @@ describe('schema', () => {
         .where('email', '=', 'a.player@example.com')
         .executeTakeFirst()
       expect(found?.id).toBe(member.id)
+
+      // citext: uniqueness is also case-insensitive — one account per human.
+      // This also proves the transaction survives a mid-body violation: the
+      // insert/select below would fail with "current transaction is aborted"
+      // if expectViolation didn't wrap the attempt in a savepoint.
+      await expectViolation(db, /duplicate key value violates unique constraint/, () =>
+        db.insertInto('members').values({ email: 'a.player@example.com' }).execute(),
+      )
 
       await db
         .insertInto('player_profiles')
@@ -41,12 +49,21 @@ describe('schema', () => {
         .returning('id')
         .executeTakeFirstOrThrow()
 
-      await expect(
+      await expectViolation(db, /rating_value_requires_system/, () =>
         db
           .insertInto('player_profiles')
           .values({ member_id: m.id, display_name: 'R', rating_system: 'none', rating_value: '4.0' })
           .execute(),
-      ).rejects.toThrow(/rating_value_requires_system/)
+      )
+
+      // Confirms nothing was written — only reachable if the transaction is
+      // still usable after the violation above.
+      const profile = await db
+        .selectFrom('player_profiles')
+        .selectAll()
+        .where('member_id', '=', m.id)
+        .executeTakeFirst()
+      expect(profile).toBeUndefined()
     })
   })
 
@@ -63,12 +80,38 @@ describe('schema', () => {
         .returning('id')
         .executeTakeFirstOrThrow()
 
-      await expect(
+      await expectViolation(db, /exactly_one_identity/, () =>
         db
           .insertInto('match_players')
           .values({ match_id: match.id, side: 1, member_id: m.id, guest_name: 'Nope' })
           .execute(),
-      ).rejects.toThrow(/exactly_one_identity/)
+      )
+
+      const rows = await db.selectFrom('match_players').selectAll().where('match_id', '=', match.id).execute()
+      expect(rows).toHaveLength(0)
+    })
+  })
+
+  it('rejects the same member recorded twice in one match', async () => {
+    await withTx(async (db) => {
+      const m = await db
+        .insertInto('members')
+        .values({ email: 'dup@example.com' })
+        .returning('id')
+        .executeTakeFirstOrThrow()
+      const match = await db
+        .insertInto('matches')
+        .values({ played_on: '2026-08-03', format: 'singles', winner_side: 1, recorded_by: m.id })
+        .returning('id')
+        .executeTakeFirstOrThrow()
+      await db.insertInto('match_players').values({ match_id: match.id, side: 1, member_id: m.id }).execute()
+
+      await expectViolation(db, /match_players_unique_member_idx/, () =>
+        db.insertInto('match_players').values({ match_id: match.id, side: 2, member_id: m.id }).execute(),
+      )
+
+      const rows = await db.selectFrom('match_players').selectAll().where('match_id', '=', match.id).execute()
+      expect(rows).toHaveLength(1)
     })
   })
 
@@ -116,5 +159,24 @@ describe('schema', () => {
       expect(rows.find((r) => r.member_id === winner.id)).toMatchObject({ wins: 1, losses: 0, matches_played: 1 })
       expect(rows.find((r) => r.member_id === loser.id)).toMatchObject({ wins: 0, losses: 1, matches_played: 1 })
     })
+  })
+
+  it('rolls back every row written inside withTx', async () => {
+    const email = `rollback-probe-${Date.now()}@example.com`
+    await withTx(async (db) => {
+      await db.insertInto('members').values({ email }).execute()
+    })
+    await withTx(async (db) => {
+      const found = await db.selectFrom('members').selectAll().where('email', '=', email).executeTakeFirst()
+      expect(found).toBeUndefined()
+    })
+  })
+
+  it('propagates an error thrown by the test body', async () => {
+    await expect(
+      withTx(async () => {
+        throw new Error('boom')
+      }),
+    ).rejects.toThrow('boom')
   })
 })
