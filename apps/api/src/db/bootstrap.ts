@@ -48,7 +48,20 @@ export function resolveBootstrapEmail(raw: string | undefined): string | undefin
   const trimmed = raw.trim()
   if (trimmed === '') return undefined
   if (!Value.Check(Email, trimmed)) {
-    throw new Error(`BOOTSTRAP_ADMIN_EMAIL is not a valid email address: ${JSON.stringify(raw)}`)
+    // Deliberately does not echo `raw` or `trimmed`: this throw becomes an
+    // uncaught top-level exception in release.ts, which Node prints straight
+    // to stderr. A malformed value is the input most likely to still be a
+    // real person's address with a typo, so it belongs to the same "never in
+    // the logs" rule as everything else here (see app.ts's comment on why
+    // addresses never reach the logs, and error-handler.ts's scrubSensitive
+    // for the analogous pg-duplicate-key case). Not using scrubSensitive
+    // here: it would rewrite a malformed value inconsistently depending on
+    // whether its own regex happens to match, which is worse than omitting
+    // the value outright.
+    throw new Error(
+      'BOOTSTRAP_ADMIN_EMAIL is not a valid email address. ' +
+        'Check the configured value; it is not echoed here because logs must not carry email addresses.',
+    )
   }
   return trimmed
 }

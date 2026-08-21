@@ -102,8 +102,21 @@ describe('bootstrapAdmin', () => {
 })
 
 describe('resolveBootstrapEmail', () => {
-  it('rejects a malformed address', () => {
-    expect(() => resolveBootstrapEmail('not-an-email')).toThrow(/valid email/i)
+  it('rejects a malformed address without echoing it in the error', () => {
+    // A malformed value is the input most likely to still be a real
+    // person's address with a typo, so the thrown message must not carry
+    // it — this becomes an uncaught top-level exception in release.ts,
+    // printed straight to stderr, and logs must not carry email addresses.
+    const probe = 'not-an-email-probe-should-not-appear'
+    let thrown: unknown
+    try {
+      resolveBootstrapEmail(probe)
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toMatch(/valid email/i)
+    expect((thrown as Error).message).not.toContain(probe)
   })
 
   it('treats a whitespace-only value as not configured', () => {
