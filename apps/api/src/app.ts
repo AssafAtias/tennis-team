@@ -79,6 +79,24 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   // threading them through every route registration.
   app.decorate('deps', deps)
 
+  // Default-deny, enforced at registration time (not deferred to `ready()`):
+  // every `/api/` route must either declare an auth `preHandler` or opt out
+  // explicitly with `config: { public: true }`. Without this, a route in a
+  // later task that forgets its `preHandler: requireAuth`/`requireRole(...)`
+  // still compiles and lints clean — `request.member` is typed non-optional
+  // — and at runtime either serves team data to an anonymous caller or
+  // throws trying to read `req.member` off an undefined value. This is what
+  // makes that non-optional `request.member` type (see plugins/session.ts)
+  // honest, and it is the one thing this app claims not to do.
+  app.addHook('onRoute', (route) => {
+    if (!route.url.startsWith('/api/')) return
+    if ((route.config as { public?: boolean } | undefined)?.public) return
+    const handlers = [route.preHandler].flat().filter(Boolean)
+    if (handlers.length === 0) {
+      throw new Error(`Route ${route.method} ${route.url} declares no auth preHandler and is not marked public`)
+    }
+  })
+
   registerErrorHandler(app)
   // contentSecurityPolicy: false only because there is no client bundle yet —
   // Task 19 replaces this with real directives once @fastify/static serves one.
