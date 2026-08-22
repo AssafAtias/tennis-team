@@ -92,6 +92,10 @@ function assertRatingCoherent(ratingSystem: string, ratingValue: unknown): void 
  * so every assignment is checked against the real column type — no `as
  * never` anywhere here, unlike the brief's version, which cast both the
  * insert `.values()` and the update `.doUpdateSet()`/`.set()` calls instead.
+ *
+ * PATCH-only. PUT must NOT use this: gating on `key in body` is exactly
+ * what makes a merge a merge, but `PUT` is supposed to create-or-REPLACE —
+ * see `toReplaceColumns` below for that path.
  */
 function toColumns(body: Partial<ProfileBody>): Partial<Updateable<PlayerProfilesTable>> {
   const out: Partial<Updateable<PlayerProfilesTable>> = {}
@@ -106,6 +110,37 @@ function toColumns(body: Partial<ProfileBody>): Partial<Updateable<PlayerProfile
   if ('racquet' in body) out.racquet = body.racquet
   if ('bio' in body) out.bio = body.bio
   return out
+}
+
+/**
+ * Builds the full optional-column set for a `PUT` create-or-REPLACE,
+ * unconditionally — every optional field defaults to `null` (or, for
+ * `rating_system`, the column's own DB default `'none'`) whether it was
+ * sent as an explicit `null` or simply omitted from the body. `member_id`
+ * and `display_name` are deliberately NOT included here; the route supplies
+ * both explicitly, since `display_name` needs its trimmed value and
+ * `member_id` comes from the session, not the body.
+ *
+ * This is what makes `PUT` actually replace rather than merge: `toColumns`
+ * above is gated on `key in body`, so a second `PUT` that simply omits a
+ * previously-set optional field would leave the OLD value in place via
+ * Postgres's `ON CONFLICT ... DO UPDATE` only touching the columns listed —
+ * silently turning "replace" into "merge" for exactly the fields a caller
+ * left out. Since every field here is always present in the returned
+ * object, that can't happen.
+ */
+function toReplaceColumns(body: ProfileBody): Omit<Insertable<PlayerProfilesTable>, 'member_id' | 'display_name'> {
+  return {
+    nickname: body.nickname ?? null,
+    phone: body.phone ?? null,
+    dominant_hand: body.dominantHand ?? null,
+    backhand: body.backhand ?? null,
+    preferred_format: body.preferredFormat ?? null,
+    rating_system: body.ratingSystem ?? 'none',
+    rating_value: body.ratingValue ?? null,
+    racquet: body.racquet ?? null,
+    bio: body.bio ?? null,
+  }
 }
 
 /** Trims and validates a display name, shared by the PUT (always present) and PATCH (only if sent) paths. */
@@ -139,7 +174,7 @@ export async function profileRoutes(app: FastifyInstance, deps: Deps): Promise<v
       // DB's `rating_value_requires_system` constraint as an ugly 500.
       assertRatingCoherent(body.ratingSystem ?? 'none', body.ratingValue)
 
-      const columns = toColumns(body)
+      const columns = toReplaceColumns(body)
       const values: Insertable<PlayerProfilesTable> = {
         ...columns,
         member_id: req.member.id,
@@ -164,13 +199,22 @@ export async function profileRoutes(app: FastifyInstance, deps: Deps): Promise<v
       const body = req.body as PatchProfileBody
       const existing = await deps.db
         .selectFrom('player_profiles')
-        .select('rating_system')
+        .select(['rating_system', 'rating_value'])
         .where('member_id', '=', req.member.id)
         .executeTakeFirst()
       if (!existing) throw notFound('Set up your profile first')
 
+      // Both halves of the coherence check must reflect what the row will
+      // actually look like AFTER this patch, not just the incoming body in
+      // isolation: a patch that only touches `ratingSystem` (e.g. flipping
+      // it to 'none' from a UI dropdown) leaves `rating_value` untouched in
+      // the database — if the check only looked at `body.ratingValue`
+      // (`undefined` here), it would wrongly conclude there's no
+      // coherence problem, and the `UPDATE` below would then trip the DB's
+      // `rating_value_requires_system` constraint as an unhandled 500.
       const effectiveSystem = body.ratingSystem ?? existing.rating_system
-      assertRatingCoherent(effectiveSystem, 'ratingValue' in body ? body.ratingValue : undefined)
+      const effectiveValue = 'ratingValue' in body ? body.ratingValue : existing.rating_value
+      assertRatingCoherent(effectiveSystem, effectiveValue)
 
       const values = toColumns(body)
       if ('displayName' in body) values.display_name = requireNonBlankName(body.displayName)

@@ -160,6 +160,14 @@ describe('members routes', () => {
       // Their session works before removal.
       expect((await app.inject({ method: 'GET', url: '/api/auth/me', cookies: victim.cookies })).statusCode).toBe(200)
 
+      // Positive control: their profile is visible while active, so the 404
+      // asserted below (after removal) is provably the removed-member check
+      // in loadDetail, not just `/api/players/:id` being an unregistered
+      // route -- without this, the two assertions can't be told apart.
+      expect(
+        (await app.inject({ method: 'GET', url: `/api/players/${victim.id}`, cookies: admin.cookies })).statusCode,
+      ).toBe(200)
+
       const res = await app.inject({
         method: 'DELETE',
         url: `/api/members/${victim.id}`,

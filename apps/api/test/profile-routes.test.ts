@@ -97,6 +97,95 @@ describe('profile routes', () => {
     })
   })
 
+  it('replaces the whole profile on a second PUT, clearing fields omitted this time', async () => {
+    await buildTestApp(async (app, ctx) => {
+      const me = await signIn(app, ctx, { email: 'replace@example.com', profile: false })
+      await app.inject({
+        method: 'PUT',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { displayName: 'Replacer', racquet: 'Babolat Pure Drive' },
+      })
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { displayName: 'Replacer' },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ displayName: 'Replacer', racquet: null })
+    })
+  })
+
+  it('clears an enum field when the patch sends null explicitly', async () => {
+    await buildTestApp(async (app, ctx) => {
+      const me = await signIn(app, ctx, { email: 'clear-enum@example.com', profile: false })
+      await app.inject({
+        method: 'PUT',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { displayName: 'Clearer', dominantHand: 'left' },
+      })
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { dominantHand: null },
+      })
+      expect(res.json().dominantHand).toBeNull()
+    })
+  })
+
+  it('rejects a patch that flips the rating system to none while a rating value remains', async () => {
+    await buildTestApp(async (app, ctx) => {
+      const me = await signIn(app, ctx, { email: 'patch-none@example.com', profile: false })
+      await app.inject({
+        method: 'PUT',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { displayName: 'Rated', ratingSystem: 'ntrp', ratingValue: '4.0' },
+      })
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { ratingSystem: 'none' },
+      })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({
+        error: { code: 'bad_request', details: { fields: [{ path: '/ratingValue' }] } },
+      })
+    })
+  })
+
+  it('allows a patch that clears the rating system and value together', async () => {
+    await buildTestApp(async (app, ctx) => {
+      const me = await signIn(app, ctx, { email: 'patch-none-clear@example.com', profile: false })
+      await app.inject({
+        method: 'PUT',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { displayName: 'Rated', ratingSystem: 'ntrp', ratingValue: '4.0' },
+      })
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/players/me',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { ratingSystem: 'none', ratingValue: null },
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ ratingSystem: 'none', ratingValue: null })
+    })
+  })
+
   it('returns another player with their record attached', async () => {
     await buildTestApp(async (app, ctx) => {
       const me = await signIn(app, ctx, { email: 'viewer@example.com' })
