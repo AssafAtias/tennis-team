@@ -63,10 +63,47 @@ describe('sweepExpired', () => {
     })
   })
 
+  // Rewritten in fix round 1: the original version (verbatim from the brief)
+  // inserted nothing before calling sweepExpired twice, so it returned
+  // { sessions: 0, tokens: 0 } both times regardless of whether the delete
+  // logic worked at all -- it would have passed against a completely broken
+  // sweep. This version inserts one already-expired session and one spent
+  // token, asserts the first sweep actually reports non-zero counts for
+  // both (the number that proves it is not vacuous), then re-runs the sweep
+  // over the now-empty tables and asserts it reports zero -- idempotency
+  // genuinely exercised, not assumed.
   it('is safe to run twice', async () => {
     await buildTestApp(async (_app, ctx) => {
+      const m = await ctx.db
+        .insertInto('members')
+        .values({ email: 'twice@example.com', status: 'active' })
+        .returning('id')
+        .executeTakeFirstOrThrow()
+
+      await ctx.db
+        .insertInto('sessions')
+        .values({
+          member_id: m.id,
+          token_hash: hashToken('twice-dead'),
+          expires_at: new Date('2026-08-01T00:00:00Z'),
+        })
+        .execute()
+
+      await ctx.db
+        .insertInto('login_tokens')
+        .values({
+          member_id: m.id,
+          token_hash: hashToken('twice-spent'),
+          expires_at: new Date('2026-08-01T00:00:00Z'),
+          consumed_at: new Date('2026-08-01T00:00:00Z'),
+          created_at: new Date('2026-08-01T00:00:00Z'),
+        })
+        .execute()
+
       const deps = { db: ctx.db, now: () => ctx.clock.now }
-      await sweepExpired(deps)
+      const first = await sweepExpired(deps)
+      expect(first).toEqual({ sessions: 1, tokens: 1 })
+
       const second = await sweepExpired(deps)
       expect(second).toEqual({ sessions: 0, tokens: 0 })
     })
@@ -118,6 +155,47 @@ describe('sweepExpired', () => {
       const left = await ctx.db.selectFrom('login_tokens').select('token_hash').execute()
       expect(left).toHaveLength(1)
       expect(left[0]!.token_hash).toEqual(hashToken('at-cutoff'))
+    })
+  })
+
+  // Added in fix round 1: pins the invariant the OR-grouping exists to
+  // protect -- "an unconsumed, unexpired token must survive regardless of
+  // age" -- with a row inserted directly against the DB rather than via the
+  // real sign-in flow. In production this shape is nearly unreachable
+  // (TOKEN_TTL_MS is 15 minutes, so an unconsumed token is always long
+  // expired well before it turns 7 days old), which is exactly why it needs
+  // a direct-insert regression test: a future change to the TTL, or to the
+  // predicate's OR-grouping, could silently start deleting live,
+  // not-yet-used tokens without any real-flow test ever noticing.
+  it('keeps an unconsumed, unexpired token no matter how old it is', async () => {
+    await buildTestApp(async (_app, ctx) => {
+      const m = await ctx.db
+        .insertInto('members')
+        .values({ email: 'unconsumed@example.com', status: 'active' })
+        .returning('id')
+        .executeTakeFirstOrThrow()
+
+      const now = ctx.clock.now
+      const wellPastRetention = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) // 30 days old
+      const futureExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000) // expires tomorrow
+
+      await ctx.db
+        .insertInto('login_tokens')
+        .values({
+          member_id: m.id,
+          token_hash: hashToken('unconsumed-old'),
+          expires_at: futureExpiry,
+          consumed_at: null,
+          created_at: wellPastRetention,
+        })
+        .execute()
+
+      const result = await sweepExpired({ db: ctx.db, now: () => ctx.clock.now })
+      expect(result.tokens).toBe(0)
+
+      const left = await ctx.db.selectFrom('login_tokens').select('token_hash').execute()
+      expect(left).toHaveLength(1)
+      expect(left[0]!.token_hash).toEqual(hashToken('unconsumed-old'))
     })
   })
 })
