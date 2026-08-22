@@ -65,7 +65,7 @@ type SetRow = {
 function assemble(m: MatchRow, players: PlayerRow[], sets: SetRow[]): MatchDetail {
   const side = (n: 1 | 2) =>
     players
-      .filter((p) => p.side === n)
+      .filter((p) => p.match_id === m.id && p.side === n)
       .map((p) => ({
         memberId: p.member_id,
         guestName: p.guest_name,
