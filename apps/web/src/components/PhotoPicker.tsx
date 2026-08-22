@@ -4,6 +4,8 @@ import { useUploadPhoto } from '../api/queries.js'
 import { Avatar } from './Avatar.js'
 import { Button } from './Button.js'
 
+const ACCEPT = PHOTO_CONTENT_TYPES.join(',')
+
 export function PhotoPicker({ name, currentUrl }: { name: string; currentUrl: string | null }) {
   const input = useRef<HTMLInputElement>(null)
   const [localError, setLocalError] = useState<string | null>(null)
@@ -11,6 +13,12 @@ export function PhotoPicker({ name, currentUrl }: { name: string; currentUrl: st
 
   function onPick(file: File | undefined) {
     setLocalError(null)
+    // Reset the input's value on every path, including a local rejection --
+    // not just in `onSettled` below. Browsers suppress `change` when the
+    // identical file is reselected without clearing `value` first, so
+    // without this, re-picking the same rejected file after reading the
+    // error would silently do nothing at all.
+    if (input.current) input.current.value = ''
     if (!file) return
     // Check locally first: rejecting a 12 MB file after uploading it is rude,
     // and the size cap is enforced server-side anyway -- this is purely a
@@ -23,11 +31,10 @@ export function PhotoPicker({ name, currentUrl }: { name: string; currentUrl: st
       setLocalError('That photo is larger than 5 MB. Try a smaller one.')
       return
     }
-    upload.mutate(file, {
-      onSettled: () => {
-        if (input.current) input.current.value = ''
-      },
-    })
+    // No `onSettled` reset needed here: the unconditional reset at the top
+    // of `onPick` already clears the input before this dispatch even starts,
+    // so it is already empty by the time this mutation settles.
+    upload.mutate(file)
   }
 
   const error = localError ?? (upload.isError ? 'Upload failed. Check your connection and try again.' : null)
@@ -43,10 +50,13 @@ export function PhotoPicker({ name, currentUrl }: { name: string; currentUrl: st
           ref={input}
           id="photo"
           type="file"
-          // No native `accept` filter: it's enforced here in JS instead
-          // (`PHOTO_CONTENT_TYPES` below), with a friendly message, rather
-          // than the browser silently hiding non-matching files from the
-          // picker with no explanation of why.
+          // `accept` narrows the native picker to just images -- without it,
+          // a teammate picking a photo on their phone gets a file browser
+          // showing every file on the device, not just images. The JS check
+          // below is still the real enforcement (a picker's `accept` is only
+          // ever a hint the OS may ignore), but this is real, load-bearing
+          // UX, not redundant with it.
+          accept={ACCEPT}
           className="sr-only"
           onChange={(e) => onPick(e.target.files?.[0])}
         />

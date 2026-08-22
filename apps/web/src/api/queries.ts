@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PHOTO_CONTENT_TYPES } from '@tennis/contracts'
 import type {
@@ -53,11 +54,17 @@ export const useRequestLink = () =>
       apiFetch('/api/auth/request-link', { method: 'POST', body: JSON.stringify(body) }),
   })
 
+// Deliberately does NOT clear the query cache itself. TanStack Query always
+// runs a mutation's own (hook-level) `onSuccess` before any `onSuccess`
+// passed to a specific `.mutate()` call -- there is no way, from inside a
+// single `mutate()` call, for a caller-supplied callback to run before a
+// clear registered here. `Me.tsx`'s sign-out handler needs to `navigate()`
+// away BEFORE the cache clears (so components already about to unmount
+// aren't still-subscribed observers when their data disappears), so
+// clearing is left to the caller, ordered after the navigation.
 export function useLogout() {
-  const qc = useQueryClient()
   return useMutation({
     mutationFn: () => apiFetch('/api/auth/logout', { method: 'POST' }),
-    onSuccess: () => qc.clear(),
   })
 }
 
@@ -127,13 +134,39 @@ export function useUploadPhoto() {
 
 export function useSaveAvailability(memberId: number) {
   const qc = useQueryClient()
+  // Tracks the most recently DISPATCHED call, not the most recently
+  // SETTLED one. The grid saves on every toggle with no debounce, so two
+  // calls routinely overlap on a slow connection -- if the user toggles A
+  // then quickly toggles B, there is no guarantee A's response arrives
+  // first. Without this guard, an unconditional `onSuccess` cache write
+  // means whichever call happens to *resolve* last wins the cache, so an
+  // out-of-order response for A (dispatched first, but resolving after B)
+  // would silently overwrite B's already-applied result with a grid that
+  // is missing the user's second toggle -- exactly the "slow connection"
+  // case the optimistic draft exists to protect against, not a rare edge
+  // case. A ref (not state) is correct here: this is bookkeeping for
+  // deciding whether to write the query cache, not something that should
+  // ever trigger a re-render on its own.
+  const latestId = useRef(0)
   return useMutation({
     mutationFn: (slots: AvailabilityGrid) =>
       apiFetch<AvailabilityGrid>('/api/players/me/availability', {
         method: 'PUT',
         body: JSON.stringify({ slots }),
       }),
-    onSuccess: (grid) => qc.setQueryData(keys.availability(memberId), grid),
+    // Runs synchronously at dispatch time (before the request is even sent),
+    // so two calls fired back-to-back get their ids assigned in dispatch
+    // order regardless of how their responses later resolve.
+    onMutate: () => ({ id: ++latestId.current }),
+    onSuccess: (grid, _slots, context) => {
+      // Only the call that is STILL the latest-dispatched one by the time it
+      // settles may write the cache. A call superseded by a newer dispatch
+      // before it resolved lost the race on purpose -- its result is stale
+      // by definition, even if it happens to arrive first.
+      if (context.id === latestId.current) {
+        qc.setQueryData(keys.availability(memberId), grid)
+      }
+    },
   })
 }
 

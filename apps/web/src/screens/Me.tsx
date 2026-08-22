@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useOutletContext } from 'react-router'
 import type { AvailabilityGrid as Grid, MeResponse } from '@tennis/contracts'
 import { useAvailability, useLogout, usePlayer, useSaveAvailability } from '../api/queries.js'
@@ -53,6 +54,7 @@ function AvailabilityCard({ memberId }: { memberId: number }) {
 export function Component() {
   const me = useOutletContext<MeResponse>()
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const profile = usePlayer(me.id)
   const logout = useLogout()
 
@@ -112,7 +114,18 @@ export function Component() {
 
         <Button
           variant="danger"
-          onClick={() => logout.mutate(undefined, { onSuccess: () => navigate('/login', { replace: true }) })}
+          onClick={() =>
+            logout.mutate(undefined, {
+              onSuccess: () => {
+                // navigate() first, THEN clear the cache: clearing first left
+                // this screen's still-mounted queries (usePlayer/useAvailability)
+                // as active observers for one more tick, so they'd refetch
+                // against an already-invalidated session and log a stray 401.
+                navigate('/login', { replace: true })
+                qc.clear()
+              },
+            })
+          }
         >
           Sign out
         </Button>

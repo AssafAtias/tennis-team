@@ -33,9 +33,43 @@ describe('PhotoPicker', () => {
   it('rejects an unsupported type locally', async () => {
     const spy = vi.spyOn(globalThis, 'fetch')
     wrap()
-    await userEvent.upload(screen.getByLabelText(/photo/i), file('anim.gif', 'image/gif', 1000))
+    // The input carries a real `accept` attribute (a load-bearing native
+    // picker hint, not redundant with this JS check -- see PhotoPicker.tsx),
+    // and user-event's `upload()` honours it by default, silently dropping a
+    // non-matching file before `onChange` ever fires. `applyAccept: false`
+    // is user-event's own documented escape hatch for exercising the JS
+    // fallback path anyway, for exactly this kind of test.
+    await userEvent.upload(screen.getByLabelText(/photo/i), file('anim.gif', 'image/gif', 1000), {
+      applyAccept: false,
+    })
     expect((await screen.findByRole('alert')).textContent).toMatch(/jpeg, png or webp/i)
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('leaves the file input re-pickable after a local rejection', async () => {
+    wrap()
+    const input = screen.getByLabelText(/photo/i) as HTMLInputElement
+    const big = file('big.jpg', 'image/jpeg', PHOTO_MAX_BYTES + 1)
+    await userEvent.upload(input, big)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    // The installed user-event's own `upload()` skips re-dispatching `change`
+    // whenever `input.files` already equals the files being set (see
+    // dist/cjs/utility/upload.js's `fileDialog` early-return) -- the same
+    // dedup real browsers apply to an unchanged file input. A second
+    // `userEvent.upload()` with the identical File object would render an
+    // outwardly IDENTICAL alert whether or not the handler actually re-ran,
+    // so that alone can't distinguish the fixed and broken versions.
+    // Asserting the input is actually empty right after the first rejection
+    // is what proves `onPick` resets it on every path -- including a local
+    // rejection -- not just in `onSettled`.
+    expect(input.files).toHaveLength(0)
+
+    // With the input cleared, re-picking the very same File object is no
+    // longer a no-op for user-event's dedup check, and genuinely re-fires
+    // the handler.
+    await userEvent.upload(input, big)
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(input.files).toHaveLength(0)
   })
 
   it('runs presign, upload, and confirm in order', async () => {
