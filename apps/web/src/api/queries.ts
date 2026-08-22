@@ -71,6 +71,16 @@ export function useSaveProfile(mode: 'create' | 'update') {
       }),
     onSuccess: (p) => {
       qc.setQueryData(keys.player(p.id), p)
+      // Eager, synchronous patch -- not just the invalidation below -- because
+      // Setup's `onSaved` navigates to `/` immediately after this resolves,
+      // before an invalidated refetch has a chance to complete. Without this,
+      // SessionGate re-renders against the still-stale cached
+      // `hasProfile: false`, sees path `/` with no profile, and bounces back
+      // to `/setup` (remounting a blank ProfileForm) even though the save
+      // just succeeded. Verified directly: without this line, submitting the
+      // create-profile form saves correctly but strands the user on a blank
+      // `/setup` instead of reaching Roster.
+      qc.setQueryData(keys.me, (old: MeResponse | undefined) => (old ? { ...old, hasProfile: true } : old))
       void qc.invalidateQueries({ queryKey: keys.me })
       void qc.invalidateQueries({ queryKey: keys.roster })
     },
