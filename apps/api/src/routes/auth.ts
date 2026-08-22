@@ -4,6 +4,7 @@ import type { Kysely } from 'kysely'
 import { CallbackQuery, MeResponse, RequestLinkBody } from '@tennis/contracts'
 import type { Deps } from '../app.js'
 import type { Database } from '../db/schema.js'
+import { withTransaction } from '../db/transaction.js'
 import { newToken, TOKEN_TTL_MS } from '../auth/tokens.js'
 import { consumeLoginToken, createSession, revokeSession, SESSION_COOKIE } from '../auth/sessions.js'
 import { clearSessionCookie, requireAuth, setSessionCookie } from '../plugins/session.js'
@@ -44,13 +45,9 @@ export function ipBudgetKey(ip: string): string {
  * their next link would arrive as a "signin" email rather than the "invite"
  * they were expecting.
  *
- * Takes the connection to run on rather than opening its own transaction,
- * because `db.transaction()` throws ("calling the transaction method for a
- * Transaction is not supported") when `db` is already inside one — which it
- * always is under this repo's test harness (every test runs inside one
- * outer, always-rolled-back transaction). `deps.db.isTransaction` at the
- * call site below picks the right thing for each case: wrap in a real
- * transaction in production, reuse the existing one in tests.
+ * Takes the connection to run on (a `trx` supplied by `withTransaction` at
+ * the call site below) rather than opening its own transaction — see
+ * `withTransaction` in `../db/transaction.js` for why.
  */
 async function activateAndCreateSession(
   db: Kysely<Database>,
@@ -212,14 +209,11 @@ export async function authRoutes(app: FastifyInstance, deps: Deps): Promise<void
       if (!member || member.status === 'removed') return reply.redirect(INVALID, 302)
 
       // Activation and session creation happen atomically — see
-      // activateAndCreateSession's doc comment for why this isn't a plain
-      // `deps.db.transaction().execute(...)` here.
+      // `withTransaction` in `../db/transaction.js`.
       const userAgent = req.headers['user-agent']
-      const session = deps.db.isTransaction
-        ? await activateAndCreateSession(deps.db, deps.now, memberId, member.status, userAgent)
-        : await deps.db
-            .transaction()
-            .execute((trx) => activateAndCreateSession(trx, deps.now, memberId, member.status, userAgent))
+      const session = await withTransaction(deps.db, (trx) =>
+        activateAndCreateSession(trx, deps.now, memberId, member.status, userAgent),
+      )
       setSessionCookie(reply, session)
       req.log.info({ memberId }, 'sign-in completed')
 

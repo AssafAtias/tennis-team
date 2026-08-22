@@ -4,6 +4,7 @@ import { InviteBody, MemberIdParams, PatchMemberBody, Roster } from '@tennis/con
 import type { RosterEntry } from '@tennis/contracts'
 import type { Deps } from '../app.js'
 import type { Database } from '../db/schema.js'
+import { withTransaction } from '../db/transaction.js'
 import { conflict, notFound } from '../plugins/error-handler.js'
 import { requireAuth, requireRole } from '../plugins/session.js'
 import { newToken, TOKEN_TTL_MS } from '../auth/tokens.js'
@@ -63,14 +64,10 @@ export async function assertAdminRemains(
  * the row lock the guard takes is actually held across both statements --
  * see the doc comment on `assertAdminRemains` for why that matters.
  *
- * Takes the connection to run on rather than always opening its own
- * transaction, for the same reason `activateAndCreateSession` in
- * `routes/auth.ts` does: `db.transaction()` throws ("calling the
- * transaction method for a Transaction is not supported") when `db` is
- * already inside one -- which it always is under this repo's test harness,
- * since every test runs inside one outer, always-rolled-back transaction.
- * `deps.db.isTransaction` picks the right thing for each case: wrap in a
- * real transaction in production, reuse the existing one in tests.
+ * Delegates to `withTransaction` (see `../db/transaction.js`) rather than
+ * opening its own transaction directly, since `db.transaction()` throws
+ * when `db` is already inside one -- which it always is under this repo's
+ * test harness.
  */
 async function guardedAdminWrite<T>(
   deps: Deps,
@@ -78,9 +75,7 @@ async function guardedAdminWrite<T>(
   next: { role?: 'admin' | 'player'; status?: 'invited' | 'active' | 'removed' },
   write: (trx: Kysely<Database>) => Promise<T>,
 ): Promise<T> {
-  const run = (trx: Kysely<Database>): Promise<T> =>
-    assertAdminRemains(trx, memberId, next).then(() => write(trx))
-  return deps.db.isTransaction ? run(deps.db) : deps.db.transaction().execute(run)
+  return withTransaction(deps.db, (trx) => assertAdminRemains(trx, memberId, next).then(() => write(trx)))
 }
 
 async function sendInvite(deps: Deps, memberId: number, email: string): Promise<void> {
