@@ -268,8 +268,23 @@ export async function profileRoutes(app: FastifyInstance, deps: Deps): Promise<v
         throw forbidden('That upload does not belong to you')
       }
 
-      const raw = await deps.storage.get(key)
-      const normalised = await normalisePhoto(raw)
+      // Both failures below are ordinary client-input situations (a stale or
+      // already-consumed key, a non-image file), not server faults -- they
+      // must not fall through to the catch-all 500 handler.
+      let raw: Buffer
+      try {
+        raw = await deps.storage.get(key)
+      } catch {
+        throw notFound('That upload could not be found. Try choosing the photo again.')
+      }
+
+      let normalised: Buffer
+      try {
+        normalised = await normalisePhoto(raw)
+      } catch {
+        throw badRequest('That file is not an image we can read.')
+      }
+
       const finalKey = `photos/${req.member.id}/${randomUUID()}.webp`
       await deps.storage.put(finalKey, normalised, 'image/webp')
       await deps.storage.delete(key)
