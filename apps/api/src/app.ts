@@ -13,6 +13,7 @@ import { authRoutes } from './routes/auth.js'
 import { memberRoutes } from './routes/members.js'
 import { profileRoutes } from './routes/profiles.js'
 import { availabilityRoutes } from './routes/availability.js'
+import { matchRoutes } from './routes/matches.js'
 
 export interface Mailer {
   sendSignInLink(to: string, url: string, kind: 'invite' | 'signin'): Promise<void>
@@ -193,5 +194,6 @@ export async function buildApp(deps: Deps): Promise<FastifyInstance> {
   await app.register(memberRoutes, deps)
   await app.register(profileRoutes, deps)
   await app.register(availabilityRoutes, deps)
+  await app.register(matchRoutes, deps)
   return app
 }
