@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import type { Kysely } from 'kysely'
+import { sql, type Kysely } from 'kysely'
 import {
   AvailabilityGrid,
   MemberIdParams,
@@ -10,21 +10,11 @@ import {
 import type { Slot } from '@tennis/contracts'
 import type { Deps } from '../app.js'
 import type { Database } from '../db/schema.js'
+import { withTransaction } from '../db/transaction.js'
+import { notFound } from '../plugins/error-handler.js'
 import { requireAuth } from '../plugins/session.js'
 
-/**
- * Deletes and re-inserts the member's whole availability set on `trx`.
- *
- * Takes the connection to run on rather than always opening its own
- * transaction, for the same reason `activateAndCreateSession` in
- * `routes/auth.ts` and `guardedAdminWrite` in `routes/members.ts` do:
- * `db.transaction()` throws ("calling the transaction method for a
- * Transaction is not supported") when `db` is already inside one — which it
- * always is under this repo's test harness, since every test runs inside
- * one outer, always-rolled-back transaction. The call site below picks the
- * right thing for each case via `deps.db.isTransaction`: wrap in a real
- * transaction in production, reuse the existing one in tests.
- */
+/** Deletes and re-inserts the member's whole availability set on `trx`, atomically — see `withTransaction`. */
 async function replaceAvailability(trx: Kysely<Database>, memberId: number, slots: Slot[]): Promise<void> {
   // Deduplicate: the grid is a set, and a double-tapped cell must not 23505.
   const unique = new Map(slots.map((s) => [`${s.weekday}:${s.block}`, s]))
@@ -49,10 +39,25 @@ export async function availabilityRoutes(app: FastifyInstance, deps: Deps): Prom
       .execute()
   }
 
+  /** Mirrors `profiles.ts`'s `loadDetail`: removed (or nonexistent) members are gone from every surface. */
+  async function assertVisibleMember(memberId: number): Promise<void> {
+    const member = await deps.db
+      .selectFrom('members')
+      .select('id')
+      .where('id', '=', memberId)
+      .where('status', '<>', 'removed')
+      .executeTakeFirst()
+    if (!member) throw notFound('No such player')
+  }
+
   app.get(
     '/api/players/:id/availability',
     { preHandler: requireAuth, schema: { params: MemberIdParams, response: { 200: AvailabilityGrid } } },
-    async (req) => load((req.params as MemberIdParams).id),
+    async (req) => {
+      const memberId = (req.params as MemberIdParams).id
+      await assertVisibleMember(memberId)
+      return load(memberId)
+    },
   )
 
   app.put(
@@ -66,10 +71,8 @@ export async function availabilityRoutes(app: FastifyInstance, deps: Deps): Prom
       const memberId = req.member.id
 
       // Whole-set replacement in one transaction: a dropped connection can never
-      // leave availability half-saved.
-      await (deps.db.isTransaction
-        ? replaceAvailability(deps.db, memberId, slots)
-        : deps.db.transaction().execute((trx) => replaceAvailability(trx, memberId, slots)))
+      // leave availability half-saved. See `withTransaction`.
+      await withTransaction(deps.db, (trx) => replaceAvailability(trx, memberId, slots))
 
       return load(memberId)
     },
@@ -83,17 +86,23 @@ export async function availabilityRoutes(app: FastifyInstance, deps: Deps): Prom
       const rows = await deps.db
         .selectFrom('availability as a')
         .innerJoin('members as m', 'm.id', 'a.member_id')
-        .innerJoin('player_profiles as p', 'p.member_id', 'm.id')
-        .select(['m.id', 'p.display_name', 'p.photo_key'])
+        // `leftJoin`, not `innerJoin`: a profile row is only created lazily
+        // on the first `PUT /api/players/me`, and nothing requires profile
+        // setup before a member can set their availability. An `innerJoin`
+        // here would silently drop an active member from every planning
+        // query just because they set their grid before touching their
+        // profile page. `p.display_name ?? m.email` below covers the gap.
+        .leftJoin('player_profiles as p', 'p.member_id', 'm.id')
+        .select(['m.id', 'm.email', 'p.display_name', 'p.photo_key'])
         .where('a.weekday', '=', weekday)
         .where('a.block', '=', block)
         .where('m.status', '=', 'active')
-        .orderBy('p.display_name')
+        .orderBy(sql`coalesce(p.display_name, m.email)`)
         .execute()
 
       return rows.map((r) => ({
         id: r.id,
-        displayName: r.display_name,
+        displayName: r.display_name ?? r.email,
         photoUrl: r.photo_key ? deps.storage.publicUrl(r.photo_key) : null,
       }))
     },
