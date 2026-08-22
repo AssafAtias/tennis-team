@@ -171,13 +171,12 @@ describe('members routes', () => {
       // Removal takes effect immediately, not at token expiry.
       expect((await app.inject({ method: 'GET', url: '/api/auth/me', cookies: victim.cookies })).statusCode).toBe(401)
 
-      // re-enabled in Task 8
-      // const profile = await app.inject({
-      //   method: 'GET',
-      //   url: `/api/players/${victim.id}`,
-      //   cookies: admin.cookies,
-      // })
-      // expect(profile.statusCode).toBe(404)
+      const profile = await app.inject({
+        method: 'GET',
+        url: `/api/players/${victim.id}`,
+        cookies: admin.cookies,
+      })
+      expect(profile.statusCode).toBe(404)
     })
   })
 
