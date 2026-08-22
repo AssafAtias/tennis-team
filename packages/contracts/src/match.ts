@@ -5,7 +5,6 @@ export const MatchFormat = Type.Union([Type.Literal('singles'), Type.Literal('do
 export type MatchFormat = Static<typeof MatchFormat>
 
 export const SideNumber = Type.Union([Type.Literal(1), Type.Literal(2)])
-export type MatchSide = Static<typeof SideNumber>
 
 /** Exactly one of memberId or guestName, matching the DB check constraint. */
 export const MatchPlayerInput = Type.Union([
@@ -61,12 +60,6 @@ export const MatchDetail = Type.Object({
   sets: Type.Array(MatchSetInput),
 })
 export type MatchDetail = Static<typeof MatchDetail>
-
-// Alias kept for callers that think in terms of a list-row summary; the
-// wire shape is identical to MatchDetail (list rows carry the same fields
-// as a single match), so this is a type alias rather than a second schema.
-export const MatchSummary = MatchDetail
-export type MatchSummary = MatchDetail
 
 export const MatchList = Type.Object({
   items: Type.Array(MatchDetail),
