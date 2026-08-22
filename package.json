@@ -8,6 +8,7 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",
+    "dev:web": "npm run dev --workspace @tennis/web",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down"
   },
