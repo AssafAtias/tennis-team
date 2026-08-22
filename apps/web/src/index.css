@@ -2,9 +2,9 @@
  * Bricolage Grotesque carries the club's voice (score sheets, the "Tennis
  * Team" wordmark); Inter stays neutral everywhere a member is reading or
  * typing. Both load here, once, so the --font-* tokens below are never
- * decorative fallback text.
+ * decorative fallback text. Self-hosted — see fonts.css for why.
  */
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Inter:wght@400;500;600;700&display=swap');
+@import './fonts.css';
 @import 'tailwindcss';
 
 /*
