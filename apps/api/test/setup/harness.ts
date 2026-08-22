@@ -95,6 +95,10 @@ export class FakeMailer implements Mailer {
 
 export class FakeStore implements ObjectStore {
   readonly objects = new Map<string, { body: Buffer; contentType: string }>()
+  // Widened to match `ObjectStore.presignPut`'s three-parameter signature;
+  // contentType/maxBytes are unused here, so left off entirely (TypeScript
+  // allows an implementing method to declare fewer parameters) rather than
+  // naming them and tripping no-unused-vars.
   async presignPut(key: string): Promise<string> {
     return `https://fake-storage.local/${key}?signed=1`
   }

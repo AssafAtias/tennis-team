@@ -11,6 +11,8 @@
     "release": "node dist/release.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/helmet": "^13.1.1",
     "@fastify/rate-limit": "^11.2.0",
@@ -19,7 +21,8 @@
     "@tennis/contracts": "*",
     "fastify": "^5.12.1",
     "kysely": "^0.27.5",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10"

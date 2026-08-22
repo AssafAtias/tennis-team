@@ -1,10 +1,21 @@
+import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import type { Insertable, Updateable } from 'kysely'
-import { MemberIdParams, PatchProfileBody, PlayerDetail, ProfileBody } from '@tennis/contracts'
+import {
+  ConfirmPhotoBody,
+  MemberIdParams,
+  PatchProfileBody,
+  PHOTO_MAX_BYTES,
+  PlayerDetail,
+  PresignBody,
+  PresignResponse,
+  ProfileBody,
+} from '@tennis/contracts'
 import type { Deps } from '../app.js'
 import type { PlayerProfilesTable } from '../db/schema.js'
-import { badRequest, notFound } from '../plugins/error-handler.js'
+import { badRequest, forbidden, notFound } from '../plugins/error-handler.js'
 import { requireAuth } from '../plugins/session.js'
+import { normalisePhoto } from '../storage/images.js'
 
 type Row = {
   id: number
@@ -129,6 +140,11 @@ function toColumns(body: Partial<ProfileBody>): Partial<Updateable<PlayerProfile
  * left out. Since every field here is always present in the returned
  * object, that can't happen.
  */
+// WARNING: never add `photo_key` to this object literal. It is safe today
+// only because `ProfileBody` happens not to carry a photo field, so a PUT
+// leaves the column untouched via the DB's ON CONFLICT column list — if
+// `ProfileBody` ever grows a photo field, a naive addition here would make
+// every profile PUT silently delete the member's uploaded photo.
 function toReplaceColumns(body: ProfileBody): Omit<Insertable<PlayerProfilesTable>, 'member_id' | 'display_name'> {
   return {
     nickname: body.nickname ?? null,
@@ -226,6 +242,58 @@ export async function profileRoutes(app: FastifyInstance, deps: Deps): Promise<v
           .where('member_id', '=', req.member.id)
           .execute()
       }
+      return loadDetail(deps, req.member.id)
+    },
+  )
+
+  app.post(
+    '/api/players/me/photo',
+    { preHandler: requireAuth, schema: { body: PresignBody, response: { 200: PresignResponse } } },
+    async (req) => {
+      const { contentType, sizeBytes } = req.body as PresignBody
+      const key = `photos/${req.member.id}/upload-${randomUUID()}`
+      const uploadUrl = await deps.storage.presignPut(key, contentType, sizeBytes)
+      return { uploadUrl, key, maxBytes: PHOTO_MAX_BYTES }
+    },
+  )
+
+  app.put(
+    '/api/players/me/photo/confirm',
+    { preHandler: requireAuth, schema: { body: ConfirmPhotoBody, response: { 200: PlayerDetail } } },
+    async (req) => {
+      const { key } = req.body as ConfirmPhotoBody
+
+      // The key is client-supplied, so prove it is one we issued to THIS member.
+      if (!key.startsWith(`photos/${req.member.id}/upload-`)) {
+        throw forbidden('That upload does not belong to you')
+      }
+
+      const raw = await deps.storage.get(key)
+      const normalised = await normalisePhoto(raw)
+      const finalKey = `photos/${req.member.id}/${randomUUID()}.webp`
+      await deps.storage.put(finalKey, normalised, 'image/webp')
+      await deps.storage.delete(key)
+
+      const previous = await deps.db
+        .selectFrom('player_profiles')
+        .select('photo_key')
+        .where('member_id', '=', req.member.id)
+        .executeTakeFirst()
+      if (!previous) throw notFound('Set up your profile first')
+
+      await deps.db
+        .updateTable('player_profiles')
+        .set({ photo_key: finalKey, updated_at: deps.now() })
+        .where('member_id', '=', req.member.id)
+        .execute()
+
+      // Best effort: a stale photo left behind is untidy, not broken.
+      if (previous.photo_key) {
+        await deps.storage.delete(previous.photo_key).catch((err) => {
+          req.log.warn({ err, memberId: req.member.id }, 'failed to delete replaced photo')
+        })
+      }
+
       return loadDetail(deps, req.member.id)
     },
   )
