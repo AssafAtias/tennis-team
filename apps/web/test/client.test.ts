@@ -41,6 +41,40 @@ describe('apiFetch', () => {
     }
   })
 
+  it('flattens a nested field path to a dotted setError key', async () => {
+    mockFetch(400, {
+      error: {
+        code: 'validation_failed',
+        message: 'bad',
+        details: { fields: [{ path: '/address/city', message: 'Required' }] },
+      },
+    })
+    try {
+      await apiFetch('/api/players/me', { method: 'PUT', body: '{}' })
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect((err as ApiError).fields).toEqual({ 'address.city': 'Required' })
+    }
+  })
+
+  it('exposes an empty fields map when details is absent or empty', async () => {
+    mockFetch(400, { error: { code: 'bad_request', message: 'bad' } })
+    try {
+      await apiFetch('/api/members')
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect((err as ApiError).fields).toEqual({})
+    }
+
+    mockFetch(400, { error: { code: 'bad_request', message: 'bad', details: { fields: [] } } })
+    try {
+      await apiFetch('/api/members')
+      expect.unreachable('should have thrown')
+    } catch (err) {
+      expect((err as ApiError).fields).toEqual({})
+    }
+  })
+
   it('sends json content-type and same-origin credentials on a mutation', async () => {
     const spy = mockFetch(200, {})
     await apiFetch('/api/members', { method: 'POST', body: JSON.stringify({ email: 'a@b.c' }) })

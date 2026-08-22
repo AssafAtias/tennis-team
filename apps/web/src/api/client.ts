@@ -33,11 +33,19 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
 
   const res = await fetch(path, { ...init, headers, credentials: 'same-origin' })
 
+  // A 204 has no body by definition and is always `res.ok`, so the `!res.ok`
+  // check below can only ever fire for the other half of this condition: a
+  // response carrying an explicit `content-length: 0` (e.g. a proxy or gateway
+  // returning an empty body on an error status).
   if (res.status === 204 || res.headers.get('content-length') === '0') {
     if (!res.ok) throw new ApiError(res.status, 'error', 'Request failed')
     return undefined as T
   }
 
+  // A response with no `content-length` at all (e.g. chunked transfer
+  // encoding) falls through to here. `.catch(() => ({}))` is deliberate: an
+  // unparseable or empty body should still surface as a generic ApiError
+  // below, not as an unrelated JSON-parse exception.
   const body = (await res.json().catch(() => ({}))) as Envelope & T
   if (!res.ok) {
     throw new ApiError(
