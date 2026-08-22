@@ -1,29 +1,13 @@
 import type { Kysely } from 'kysely'
-import { FormatRegistry } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
 import { Email } from '@tennis/contracts'
 import type { Database } from './schema.js'
 
-// TypeBox's `format` keyword only fires once a checker is registered for
-// it: `Value.Check` treats an *unregistered* format as an unconditional
-// failure, not as "unchecked" — verified directly: without this,
-// `Value.Check(Email, 'a@b.com')` returns false for a plainly valid
-// address. Fastify's own route validation gets `email` for free because
-// `@fastify/ajv-compiler` (bundled by fastify, see app.ts) wires up
-// ajv-formats' "full" formats automatically. This registers the exact same
-// regex — copied from `ajv-formats`'s `fullFormats.email`, the mode
-// ajv-formats defaults to — with TypeBox's FormatRegistry, so this
-// CLI-only check can never disagree with what `POST /api/auth/request-link`
-// accepts.
-if (!FormatRegistry.Has('email')) {
-  FormatRegistry.Set(
-    'email',
-    (value: string) =>
-      /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(
-        value,
-      ),
-  )
-}
+// `Email`'s format checker (registered in `@tennis/contracts`, next to the
+// schema itself — see the comment there) is guaranteed to be registered by
+// the time this module runs `Value.Check(Email, ...)` below, because
+// importing `Email` from `@tennis/contracts` already forces that
+// registration to happen; there is no way to get one without the other.
 
 /**
  * Resolves the configured bootstrap address into a definite state before

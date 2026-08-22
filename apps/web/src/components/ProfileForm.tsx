@@ -1,6 +1,6 @@
 import { useForm, type Resolver } from 'react-hook-form'
-import { typeboxResolver } from '@hookform/resolvers/typebox'
 import { ProfileBody, type PlayerDetail, type ProfileBody as Body } from '@tennis/contracts'
+import { typeboxFormResolver } from '../api/typeboxForm.js'
 import { ApiError } from '../api/client.js'
 import { useSaveProfile } from '../api/queries.js'
 import { Button } from './Button.js'
@@ -18,33 +18,13 @@ import { Field } from './Field.js'
 // '', backhand: '', preferredFormat: '' })` reports "Expected union value"
 // for all three, which would block every submission where those selects
 // were simply left on "Prefer not to say" -- normalizing `''` to `null`
-// before typeboxResolver ever sees it (rather than only after validation,
+// before the resolver ever sees it (rather than only after validation,
 // where the brief's own `onSubmit` does the same substitution) is what
 // makes leaving a select unset a first-class, submittable case instead of
-// a client-side validation error nobody caused.
-//
-// The `as unknown as TypeboxResolverArg` / `as unknown as Resolver<Body>`
-// casts below are a second, unrelated fix: `@hookform/resolvers` ships no
-// `"type": "module"`, so under this repo's `moduleResolution: NodeNext`,
-// TypeScript treats its `typebox/dist/index.d.ts` as CommonJS-implied and
-// resolves its internal `import { TObject } from '@sinclair/typebox'` via
-// the *require* condition (`@sinclair/typebox`'s `build/cjs/...`), while our
-// own ESM source resolves the same package via the *import* condition
-// (`build/esm/...`). TypeBox brands its schema types with `unique symbol`s
-// (`[Kind]` etc.); the cjs and esm builds each declare that symbol
-// separately, so an esm-realm `TObject` (e.g. `ProfileBody`'s type) is
-// structurally incompatible with the cjs-realm `TObject` the resolver's own
-// signature expects -- confirmed directly: TS's diagnostic names both
-// `.../build/esm/type/object/object` and `.../build/cjs/type/object/object`
-// as the two (semantically identical, nominally distinct) types. Not
-// fixable by reshaping `ProfileBody` -- it's a dual-package-hazard bug in
-// how the library ships its types (5.9.1 is current latest on npm, no newer
-// patch exists), and the runtime behaviour is unaffected (confirmed by the
-// passing tests below). `Parameters<typeof typeboxResolver>[0]` pulls the
-// resolver's *own* declared parameter type instead of reconstructing an
-// esm-realm `TObject` that would mismatch the same way.
-type TypeboxResolverArg = Parameters<typeof typeboxResolver>[0]
-const validate = typeboxResolver(ProfileBody as unknown as TypeboxResolverArg) as unknown as Resolver<Body>
+// a client-side validation error nobody caused. Specific to this form's
+// fields, not a general resolver concern -- unlike the CJS/ESM cast (see
+// `typeboxFormResolver`), it stays here rather than moving into the helper.
+const validate = typeboxFormResolver(ProfileBody)
 const resolver: Resolver<Body> = (values, context, options) => {
   const normalized = { ...values } as Record<string, unknown>
   for (const key of ['dominantHand', 'backhand', 'preferredFormat']) {
