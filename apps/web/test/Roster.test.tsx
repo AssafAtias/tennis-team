@@ -74,6 +74,22 @@ describe('Roster', () => {
     expect(within(screen.getByRole('list')).getByText('pending@example.com')).toBeTruthy()
   })
 
+  it('does not let you tap into a member who has no profile yet', async () => {
+    mockApi()
+    renderRoster()
+    const list = await screen.findByRole('list')
+    // No profile row exists for an invited member (a completed profile can
+    // never have a null displayName), so GET /api/players/:id would 404 --
+    // linking there would tell an admin "That player could not be found"
+    // about someone who is plainly right there on the roster.
+    expect(within(list).queryByRole('link', { name: /pending@example\.com/i })).toBeNull()
+    // The row itself still renders with everything it always showed.
+    expect(within(list).getByText('pending@example.com')).toBeTruthy()
+    expect(within(list).getByText('Pending')).toBeTruthy()
+    // A member who *has* completed a profile is still a real link.
+    expect(within(list).getByRole('link', { name: /Me/i })).toBeTruthy()
+  })
+
   it('reports an empty roster rather than showing a blank page', async () => {
     mockApi([])
     renderRoster()

@@ -16,6 +16,43 @@ const ratingOf = (m: RosterEntry) =>
 function RosterRow({ member }: { member: RosterEntry }) {
   const rating = ratingOf(member)
   const detail = [rating, member.preferredFormat].filter(Boolean).join(' · ')
+  // A completed profile can never have a null display name (ProfileBody
+  // requires a non-empty one), so `displayName === null` means this member
+  // has never finished Setup -- there is no player to navigate to yet.
+  // `GET /api/players/:id` 404s for exactly this member, so linking there
+  // would tell an admin "That player could not be found" about someone who
+  // is plainly right there on the roster. The row already shows everything
+  // there is to show (avatar, email, Pending badge), so a non-interactive
+  // row -- not a dedicated "no profile yet" page -- is the correct target.
+  const hasProfile = member.displayName != null
+
+  const content = (
+    <>
+      <Avatar name={nameOf(member)} url={member.photoUrl} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span className="truncate font-semibold">{nameOf(member)}</span>
+          {member.nickname ? (
+            <span className="truncate text-xs text-night-700/60">“{member.nickname}”</span>
+          ) : null}
+        </span>
+        <span className="block truncate text-xs text-night-700/70">{detail || 'No details yet'}</span>
+      </span>
+      {member.status === 'invited' ? (
+        <span className="rounded-full bg-clay-100 px-2 py-0.5 text-[0.6875rem] font-semibold uppercase tracking-wide text-clay-600">
+          Pending
+        </span>
+      ) : null}
+    </>
+  )
+
+  if (!hasProfile) {
+    return (
+      <li>
+        <div className="flex items-center gap-3 rounded-card p-3">{content}</div>
+      </li>
+    )
+  }
 
   return (
     <li>
@@ -23,21 +60,7 @@ function RosterRow({ member }: { member: RosterEntry }) {
         to={`/players/${member.id}`}
         className="flex items-center gap-3 rounded-card p-3 hover:bg-clay-50"
       >
-        <Avatar name={nameOf(member)} url={member.photoUrl} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="truncate font-semibold">{nameOf(member)}</span>
-            {member.nickname ? (
-              <span className="truncate text-xs text-night-700/60">“{member.nickname}”</span>
-            ) : null}
-          </span>
-          <span className="block truncate text-xs text-night-700/70">{detail || 'No details yet'}</span>
-        </span>
-        {member.status === 'invited' ? (
-          <span className="rounded-full bg-clay-100 px-2 py-0.5 text-[0.6875rem] font-semibold uppercase tracking-wide text-clay-600">
-            Pending
-          </span>
-        ) : null}
+        {content}
       </Link>
     </li>
   )
