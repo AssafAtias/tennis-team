@@ -145,6 +145,36 @@ describe('photo routes', () => {
     })
   })
 
+  // A missing object is an ordinary client mistake and becomes a 404. Any
+  // OTHER storage failure -- permissions, a network blip, the wrong bucket
+  // -- is an infrastructure problem, not the caller's fault, and must
+  // surface as an ordinary 500 (which pages someone) rather than being
+  // misclassified as "you did something wrong."
+  it('surfaces a non-missing-object storage failure as a 500, not a 404', async () => {
+    await buildTestApp(async (app, ctx) => {
+      const me = await signIn(app, ctx, { email: 'storage-outage@example.com' })
+      const presign = await app.inject({
+        method: 'POST',
+        url: '/api/players/me/photo',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { contentType: 'image/jpeg', sizeBytes: 120_000 },
+      })
+      const { key } = presign.json()
+      await ctx.storage.put(key, await samplePhoto(), 'image/jpeg')
+      ctx.storage.poisonGet(key, new Error('ECONNRESET: connection reset by peer'))
+
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/api/players/me/photo/confirm',
+        headers: ORIGIN,
+        cookies: me.cookies,
+        payload: { key },
+      })
+      expect(res.statusCode).toBe(500)
+    })
+  })
+
   it('returns 400 confirming an object that is not an image at all', async () => {
     await buildTestApp(async (app, ctx) => {
       const me = await signIn(app, ctx, { email: 'not-an-image@example.com' })

@@ -93,8 +93,34 @@ export class FakeMailer implements Mailer {
   }
 }
 
+/**
+ * Shaped like the error `@aws-sdk/client-s3`'s `GetObjectCommand` actually
+ * throws for a missing key -- `name === 'NoSuchKey'` plus
+ * `$metadata.httpStatusCode === 404` -- so `isMissingObjectError` in
+ * `routes/profiles.ts` sees the same shape against this fake that it sees
+ * against the real S3 client.
+ */
+class NoSuchKeyError extends Error {
+  readonly $metadata = { httpStatusCode: 404 }
+  constructor(key: string) {
+    super(`no such object: ${key}`)
+    this.name = 'NoSuchKey'
+  }
+}
+
 export class FakeStore implements ObjectStore {
   readonly objects = new Map<string, { body: Buffer; contentType: string }>()
+  // Test-only: lets a test simulate a storage-layer failure for a specific
+  // key that is NOT "the object is missing" -- e.g. a permissions error or
+  // a network blip -- distinct from the NoSuchKeyError `get` throws below.
+  // See `poisonGet`.
+  private readonly poisonedGets = new Map<string, Error>()
+
+  /** Test-only: makes the next `get(key)` for this key throw `err` instead of the usual NoSuchKeyError. */
+  poisonGet(key: string, err: Error): void {
+    this.poisonedGets.set(key, err)
+  }
+
   // Widened to match `ObjectStore.presignPut`'s three-parameter signature;
   // contentType/maxBytes are unused here, so left off entirely (TypeScript
   // allows an implementing method to declare fewer parameters) rather than
@@ -103,8 +129,10 @@ export class FakeStore implements ObjectStore {
     return `https://fake-storage.local/${key}?signed=1`
   }
   async get(key: string): Promise<Buffer> {
+    const poison = this.poisonedGets.get(key)
+    if (poison) throw poison
     const o = this.objects.get(key)
-    if (!o) throw new Error(`no such object: ${key}`)
+    if (!o) throw new NoSuchKeyError(key)
     return o.body
   }
   async put(key: string, body: Buffer, contentType: string): Promise<void> {

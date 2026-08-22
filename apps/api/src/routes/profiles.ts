@@ -159,6 +159,23 @@ function toReplaceColumns(body: ProfileBody): Omit<Insertable<PlayerProfilesTabl
   }
 }
 
+/**
+ * Distinguishes "the object genuinely is not there" (a stale or
+ * already-consumed upload key -- an ordinary client mistake) from any other
+ * storage failure (permissions, network, wrong bucket/region, throttling --
+ * an infrastructure problem that should page someone, not be blamed on the
+ * user as a 404). The real `@aws-sdk/client-s3` throws a `NoSuchKey` error
+ * whose `name` is `'NoSuchKey'`; its `$metadata.httpStatusCode` is checked
+ * too since the SDK is not always consistent about which shape a given
+ * failure takes.
+ */
+function isMissingObjectError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  if (err.name === 'NoSuchKey') return true
+  const metadata = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+  return metadata?.httpStatusCode === 404
+}
+
 /** Trims and validates a display name, shared by the PUT (always present) and PATCH (only if sent) paths. */
 function requireNonBlankName(name: string): string {
   const trimmed = name.trim()
@@ -268,20 +285,30 @@ export async function profileRoutes(app: FastifyInstance, deps: Deps): Promise<v
         throw forbidden('That upload does not belong to you')
       }
 
-      // Both failures below are ordinary client-input situations (a stale or
-      // already-consumed key, a non-image file), not server faults -- they
-      // must not fall through to the catch-all 500 handler.
+      // A stale or already-consumed upload key is an ordinary client mistake
+      // and must not fall through to the catch-all 500 handler -- but only
+      // that specific failure. Anything else from storage (permissions, a
+      // network blip, the wrong bucket) is an infrastructure problem, not
+      // the caller's fault, so it is rethrown as-is for the generic error
+      // handler to log at 'unhandled error'/500 and page someone.
       let raw: Buffer
       try {
         raw = await deps.storage.get(key)
-      } catch {
+      } catch (err) {
+        if (!isMissingObjectError(err)) throw err
+        req.log.warn({ err, memberId: req.member.id }, 'photo confirm: could not fetch upload')
         throw notFound('That upload could not be found. Try choosing the photo again.')
       }
 
+      // A file sharp cannot decode (wrong format, corrupt, truncated) is
+      // always an ordinary client-input situation, so this one stays a flat
+      // catch -- but it is still logged before converting to a 400, so a
+      // spike in bad uploads is visible rather than silent.
       let normalised: Buffer
       try {
         normalised = await normalisePhoto(raw)
-      } catch {
+      } catch (err) {
+        req.log.warn({ err, memberId: req.member.id }, 'photo confirm: could not decode uploaded image')
         throw badRequest('That file is not an image we can read.')
       }
 
