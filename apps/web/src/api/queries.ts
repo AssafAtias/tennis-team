@@ -1,4 +1,3 @@
-import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { PHOTO_CONTENT_TYPES } from '@tennis/contracts'
 import type {
@@ -134,39 +133,24 @@ export function useUploadPhoto() {
 
 export function useSaveAvailability(memberId: number) {
   const qc = useQueryClient()
-  // Tracks the most recently DISPATCHED call, not the most recently
-  // SETTLED one. The grid saves on every toggle with no debounce, so two
-  // calls routinely overlap on a slow connection -- if the user toggles A
-  // then quickly toggles B, there is no guarantee A's response arrives
-  // first. Without this guard, an unconditional `onSuccess` cache write
-  // means whichever call happens to *resolve* last wins the cache, so an
-  // out-of-order response for A (dispatched first, but resolving after B)
-  // would silently overwrite B's already-applied result with a grid that
-  // is missing the user's second toggle -- exactly the "slow connection"
-  // case the optimistic draft exists to protect against, not a rare edge
-  // case. A ref (not state) is correct here: this is bookkeeping for
-  // deciding whether to write the query cache, not something that should
-  // ever trigger a re-render on its own.
-  const latestId = useRef(0)
+  // No dispatch-order guard here anymore: `AvailabilityCard` (Me.tsx) now
+  // enforces single-flight (at most one save in flight, with a trailing
+  // resend if the draft moved on while it was in flight), so this hook
+  // never has two of its own calls in the air at once and a plain
+  // unconditional cache write on success is safe again. An id-based guard
+  // at this layer alone was insufficient anyway -- it protected the query
+  // cache write but not the call-site's own `onSuccess` (clearing the
+  // local draft), which could still silently revert a newer, unsaved
+  // toggle when an older, superseded call happened to succeed. Removing
+  // the possibility of overlap at the source is what actually closes that
+  // gap; see AvailabilityCard for where the sequencing now lives.
   return useMutation({
     mutationFn: (slots: AvailabilityGrid) =>
       apiFetch<AvailabilityGrid>('/api/players/me/availability', {
         method: 'PUT',
         body: JSON.stringify({ slots }),
       }),
-    // Runs synchronously at dispatch time (before the request is even sent),
-    // so two calls fired back-to-back get their ids assigned in dispatch
-    // order regardless of how their responses later resolve.
-    onMutate: () => ({ id: ++latestId.current }),
-    onSuccess: (grid, _slots, context) => {
-      // Only the call that is STILL the latest-dispatched one by the time it
-      // settles may write the cache. A call superseded by a newer dispatch
-      // before it resolved lost the race on purpose -- its result is stale
-      // by definition, even if it happens to arrive first.
-      if (context.id === latestId.current) {
-        qc.setQueryData(keys.availability(memberId), grid)
-      }
-    },
+    onSuccess: (grid) => qc.setQueryData(keys.availability(memberId), grid),
   })
 }
 

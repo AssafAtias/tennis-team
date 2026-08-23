@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useOutletContext } from 'react-router'
 import type { AvailabilityGrid as Grid, MeResponse } from '@tennis/contracts'
@@ -12,18 +12,87 @@ import { PhotoPicker } from '../components/PhotoPicker.js'
 import { ProfileForm } from '../components/ProfileForm.js'
 import { Spinner } from '../components/Spinner.js'
 
+const slotKey = (weekday: number, block: string) => `${weekday}:${block}`
+
+/** Order-independent equality: `AvailabilityGrid` always rebuilds the whole array, so two grids representing the same selection can still differ in element order. */
+function sameSlots(a: Grid, b: Grid): boolean {
+  if (a.length !== b.length) return false
+  const bKeys = new Set(b.map((s) => slotKey(s.weekday, s.block)))
+  return a.every((s) => bKeys.has(slotKey(s.weekday, s.block)))
+}
+
 function AvailabilityCard({ memberId }: { memberId: number }) {
   const query = useAvailability(memberId)
   const save = useSaveAvailability(memberId)
   // Optimistic local copy so the grid responds instantly on a slow connection
-  // at a court. Cleared on success; kept (with the failed alert below) on
-  // failure, so a network blip never silently discards what was tapped.
+  // at a court. Cleared only once a save both succeeds AND still matches
+  // what's currently on screen -- see `settle` below.
   const [draft, setDraft] = useState<Grid | null>(null)
   const slots = draft ?? query.data ?? []
 
-  function onChange(next: Grid) {
+  // Single-flight with a trailing resend, rather than letting saves overlap
+  // and reconciling afterward. The grid is an idempotent whole-set
+  // replacement, so "send whatever the draft currently is once the wire is
+  // free" is exactly right for this domain, and it makes the overlap bugs
+  // (an older response landing after a newer one, or a stale success
+  // silently clearing a newer failed toggle) structurally impossible rather
+  // than something to detect and paper over after the fact.
+  //
+  // `draftRef` mirrors `draft` state synchronously (updated in the same
+  // call that updates state) so `settle`, which can run an arbitrary tick
+  // after it was scheduled, always reads the true latest draft rather than
+  // whatever its own closure captured at dispatch time.
+  const draftRef = useRef<Grid | null>(null)
+  const inFlightRef = useRef<Grid | null>(null)
+
+  function setDraftEverywhere(next: Grid | null) {
+    draftRef.current = next
     setDraft(next)
-    save.mutate(next, { onSuccess: () => setDraft(null) })
+  }
+
+  function dispatch(grid: Grid) {
+    inFlightRef.current = grid
+    save.mutate(grid, {
+      onSuccess: () => settle(grid, true),
+      onError: () => settle(grid, false),
+    })
+  }
+
+  function settle(sent: Grid, ok: boolean) {
+    inFlightRef.current = null
+    const current = draftRef.current
+    const caughtUp = current !== null && sameSlots(current, sent)
+    if (ok) {
+      if (caughtUp) {
+        // Nothing has changed locally since exactly this grid was sent --
+        // the server now matches what's on screen, so there is nothing left
+        // to show as unsaved.
+        setDraftEverywhere(null)
+      } else if (current) {
+        // The draft moved on while this save was in flight. Resend the
+        // current state now that the wire is free, rather than leaving an
+        // unsaved toggle sitting there until the next unrelated interaction.
+        dispatch(current)
+      }
+    } else if (!caughtUp && current) {
+      // This failed attempt is already stale -- a newer toggle happened
+      // while it was in flight. Try the newer state instead of leaving a
+      // failed, superseded attempt as the last word. If the draft is
+      // unchanged (`caughtUp`), we deliberately do NOT resend: the failure
+      // below stays visible and the draft stays exactly as the user left
+      // it, until they act again.
+      dispatch(current)
+    }
+  }
+
+  function onChange(next: Grid) {
+    setDraftEverywhere(next)
+    if (!inFlightRef.current) {
+      dispatch(next)
+    }
+    // else: a save is already in flight. Its `settle` call will pick up
+    // this newer draft (via `draftRef`) once it completes -- no need to
+    // dispatch anything here.
   }
 
   return (
@@ -34,7 +103,11 @@ function AvailabilityCard({ memberId }: { memberId: number }) {
         {query.isPending ? (
           <Spinner label="Loading your availability" />
         ) : (
-          <AvailabilityGrid slots={slots} onChange={onChange} disabled={save.isPending} />
+          // No `disabled` here: with single-flight, a toggle made while a
+          // save is in flight is exactly what should still register --
+          // it updates the draft and rides along on the trailing resend --
+          // rather than being blocked at the UI.
+          <AvailabilityGrid slots={slots} onChange={onChange} />
         )}
       </div>
       {/* aria-live="polite" so a screen reader hears "Saving…" / "Saved"
