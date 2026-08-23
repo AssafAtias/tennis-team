@@ -1,0 +1,67 @@
+/*
+ * Self-hosted, not Google Fonts. Two reasons, both load-bearing:
+ *
+ * 1. CSP (Task 19): a CSS `@import` of a remote stylesheet is governed by
+ *    `style-src`, and the `@font-face` rules inside it point at
+ *    fonts.gstatic.com, governed by `font-src`. This app's policy is
+ *    `style-src 'self' 'unsafe-inline'` / `font-src 'self' data:` — a Google
+ *    Fonts import fails both checks and silently falls back to
+ *    ui-sans-serif, undoing the type system with no visible error.
+ * 2. Privacy: this app strips EXIF GPS from member photos because they are
+ *    photos of identifiable people. A font request to a third party on every
+ *    page load hands that same party every member's IP and UA string for no
+ *    reason related to the product.
+ *
+ * Subsets vendored from @fontsource-variable/{inter,bricolage-grotesque}
+ * (OFL-licensed; LICENSE-*.txt kept alongside for attribution). Only the
+ * `latin` and `latin-ext` unicode ranges are kept (dropped cyrillic, greek,
+ * vietnamese, etc.) — `latin` covers plain ASCII text, `latin-ext` adds
+ * accented characters for names like "José" or "Renée". Both are variable
+ * fonts, so one file each covers the whole weight axis. The browser only
+ * fetches a range's file if a character in it is actually rendered, so an
+ * all-ASCII page never pays for `latin-ext`:
+ *   inter-latin              ~47 KB   inter-latin-ext              ~83 KB
+ *   bricolage-grotesque-latin ~40 KB   bricolage-grotesque-latin-ext ~18 KB
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('./assets/fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('./assets/fonts/inter-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('./assets/fonts/bricolage-grotesque-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url('./assets/fonts/bricolage-grotesque-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}

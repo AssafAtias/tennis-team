@@ -1,0 +1,76 @@
+/*
+ * Bricolage Grotesque carries the club's voice (score sheets, the "Tennis
+ * Team" wordmark); Inter stays neutral everywhere a member is reading or
+ * typing. Both load here, once, so the --font-* tokens below are never
+ * decorative fallback text. Self-hosted — see fonts.css for why.
+ */
+@import './fonts.css';
+@import 'tailwindcss';
+
+/*
+ * Clay court, not default Tailwind. Terracotta ground, chalk lines, a
+ * backdrop green kept quiet on purpose so it never competes with the clay
+ * for "primary accent." Every colour below is used somewhere; none is
+ * decorative.
+ *
+ * clay-500 is the packed-clay terracotta itself, so it is the only warm
+ * accent doing interactive work (primary actions, focus rings, the active
+ * nav mark). court-500/700 are desaturated on purpose -- a saturated green
+ * next to a saturated orange reads as a holiday palette, not a court -- so
+ * green is reserved for the single "you are here" signature and nothing
+ * else competes for attention.
+ */
+@theme {
+  --color-clay-50: #fdf5ef;
+  --color-clay-100: #f6ddc8;
+  --color-clay-300: #dd9a68;
+  --color-clay-500: #c1440e;
+  --color-clay-600: #9c380c;
+  --color-chalk: #fbfaf6;
+  --color-line: #e4ddd0;
+  --color-court-500: #4a7c4f;
+  --color-court-700: #2f4f30;
+  --color-night-700: #33302b;
+  --color-night-900: #1c1a17;
+
+  --font-display: 'Bricolage Grotesque', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+  --radius-card: 0.875rem;
+  --shadow-lift: 0 1px 2px rgb(28 26 23 / 0.06), 0 8px 24px -12px rgb(28 26 23 / 0.18);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-chalk text-night-900 font-sans antialiased;
+    /* Room for the bottom tab bar plus the iOS home indicator. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* Visible focus everywhere: keyboard users are not an afterthought. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-clay-500;
+  }
+}
+
+@utility tap-target {
+  min-height: 2.75rem; /* 44px */
+  min-width: 2.75rem;
+}
+
+/*
+ * The signature: a small court-500 mark that stands in for "you are here."
+ * It is the one place green is allowed to be the loudest thing on screen --
+ * everywhere else it stays in the backdrop -- and it reads the same way on
+ * the phone tab bar and the desktop side nav, so switching layout at `lg`
+ * never costs a member their sense of place.
+ */
+@utility here-mark {
+  display: inline-block;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background-color: var(--color-court-500);
+}

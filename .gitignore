@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-test/
 build/
 .env
 .env.*
@@ -8,4 +9,5 @@ coverage/
 playwright-report/
 test-results/
 *.log
+*.tsbuildinfo
 .DS_Store
